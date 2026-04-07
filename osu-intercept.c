@@ -1,27 +1,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <errno.h>
-#include <string.h>
 #include <linux/input.h>
 
-#define K1 KEY_Z //set the physical keys used
-#define K2 KEY_X //to control the virtual keys
+// Default virtual keys
+#define V1 KEY_Z
+#define V2 KEY_X
 
 void print_usage(FILE *stream, const char *program) {
-	  // clang-format off
+    // clang-format off
     fprintf(stream,
-            "osu-intercept - maps two keys onto two virtual keys\n"
+            "osu-intercept-passthrough - dynamic negative edge filter with physical passthrough\n"
             "\n"
-            "usage: %s [-h | -z key1 | -x key2 | -Z virtual1 | -X virtual2]\n"
+            "usage: %s [-h | -Z virtual1 | -X virtual2]\n"
             "\n"
             "options:\n"
             "    -h show this message and exit\n"
-            "    -z key code for first physical key (default: 'z')\n"
-            "    -x key code for second physical key (default: 'x')\n"
-            "    -Z key code for first virtual key (default: same as key1)\n"
-            "    -X key code for second virtual key (default: same as key2)\n",
-            program);
+            "    -Z key code for first virtual key (default: %d)\n"
+            "    -X key code for second virtual key (default: %d)\n",
+            program, V1, V2);
     // clang-format on
 }
 
@@ -35,85 +32,102 @@ static inline void write_ev(const struct input_event *ev) {
 }
 
 int main(int argc, char *argv[]) {
-	  int k1_code = K1;
-	  int k2_code = K2;
-	  int v1_code = 0;
-	  int v2_code = 0;
-    for (int opt; (opt = getopt(argc, argv, "hz:x:Z:X:")) != -1;) {
-        switch (opt) {
-            case 'h':
-            return print_usage(stdout, argv[0]), EXIT_SUCCESS;
-            case 'z':
-            k1_code = atoi(optarg);
-            continue;
-            case 'x':
-            k2_code = atoi(optarg);
-            continue;
-            case 'Z':
-            v1_code = atoi(optarg);
-            continue;
-            case 'X':
-            v2_code = atoi(optarg);
-            continue;
-        }
+    int v1_code = 0;
+    int v2_code = 0;
 
-        return print_usage(stderr, argv[0]), EXIT_FAILURE;
+    for (int opt; (opt = getopt(argc, argv, "hZ:X:")) != -1;) {
+        switch (opt) {
+            case 'h': return print_usage(stdout, argv[0]), EXIT_SUCCESS;
+            case 'Z': v1_code = atoi(optarg); continue;
+            case 'X': v2_code = atoi(optarg); continue;
+            default:  return print_usage(stderr, argv[0]), EXIT_FAILURE;
+        }
     }
-    if (!k1_code) k1_code = K1;
-    if (!k2_code) k2_code = K2;
-    if (!v1_code) v1_code = k1_code;
-    if (!v2_code) v2_code = k2_code;
+    
+    if (!v1_code) v1_code = V1;
+    if (!v2_code) v2_code = V2;
+
     setbuf(stdin, NULL);
     setbuf(stdout, NULL);
+
     struct input_event ie;
-    struct input_event v1_up = {
-          .type = EV_KEY,
-          .code = v1_code,
-          .value = 0
-        };
-    struct input_event v2_up = {
-          .type = EV_KEY,
-          .code = v2_code,
-          .value = 0
-        };
-    struct input_event syn = {
-        .type = EV_SYN,
-        .code = SYN_REPORT, 
-        .value = 0
-    };
-    enum { NONE, RELEASE, SINGLE, PRESS } state = NONE;
-    int k1 = 0; int k2 = 0;
-    int act = 0;
+
+    int last_key1 = 0;
+    int last_key2 = 0;
+    int key1_pressed = 0;
+    int key2_pressed = 0;
+    int act = 0; // 0 = v1_code active, 1 = v2_code active
+
     while (read_ev(&ie)) {
-        if (ie.type == EV_MSC && ie.code == MSC_SCAN)
-            continue;
-        if ((ie.type != EV_KEY) || 
-            ((ie.code != k1_code) && (ie.code != k2_code))) {
-              write_ev(&ie);
+        // Pass ALL non-key events (like EV_SYN and MSC_SCAN) through immediately
+        if (ie.type != EV_KEY) {
+            write_ev(&ie);
             continue;
         }
-        if (ie.value == 2) continue; //2 is key repeat
-        if (ie.code == k1_code) k1 = ie.value;
-        else k2 = ie.value;
-        state = k1 + k2 + ie.value;
-        switch (state) {
-            case SINGLE: //key pressed alone
-            act = (ie.code == k1_code); //k1_code==v1_code press
-            ie.code = act ? v1_code : v2_code;
-            break;
-            case RELEASE: //two keys released to one or
-            case PRESS:   //one key pressed to two, toggle time
-            write_ev(act ? &v1_up : &v2_up);
-            write_ev(&syn); //emit release and flush buffer
-            ie.value = 1; //hijack press event
-            ie.code = act ? v2_code : v1_code; //map using active flag
-            act = !act; //toggle
-            break;
-            case NONE: //no keys pressed
-            ie.code = act ? v1_code : v2_code;
-            act = 0;  //reset active flag
+        
+        // Pass the physical key event through immediately
+        write_ev(&ie);
+
+        // Ignore key repeats to keep the state machine clean
+        if (ie.value == 2) continue; 
+
+        if (ie.value == 1) { // PRESS EVENT
+            if (ie.code == last_key1) {
+                key1_pressed = 1;
+            } else if (ie.code == last_key2) {
+                key2_pressed = 1;
+            } else {
+                // Dynamic Shift: New key takes over, oldest is forgotten
+                last_key1 = last_key2;
+                last_key2 = ie.code;
+                key1_pressed = key2_pressed;
+                key2_pressed = 1;
+            }
+
+            if (key1_pressed && key2_pressed) {
+                // OVERLAP (1 -> 2 keys): Release active, toggle, press new
+                struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
+                write_ev(&rel_ev);
+
+                act = !act;
+                struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
+                write_ev(&press_ev);
+            } else {
+                // SINGLE PRESS (0 -> 1 key)
+                act = (ie.code == last_key2);
+                struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
+                write_ev(&press_ev);
+            }
+            
+        } else if (ie.value == 0) { // RELEASE EVENT
+            int is_tracked = 0;
+
+            if (ie.code == last_key1) {
+                key1_pressed = 0;
+                is_tracked = 1;
+            } else if (ie.code == last_key2) {
+                key2_pressed = 0;
+                is_tracked = 1;
+            }
+
+            if (is_tracked) {
+                if (key1_pressed || key2_pressed) {
+                    // OVERLAP RELEASE (2 -> 1 keys): Release active, toggle, press remaining
+                    struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
+                    write_ev(&rel_ev);
+
+                    act = !act;
+                    struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
+                    write_ev(&press_ev);
+                } else {
+                    // ALL RELEASED (1 -> 0 keys): Release active
+                    struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
+                    write_ev(&rel_ev);
+                    act = 0; // Reset state
+                }
+            }
+            // Untracked releases do nothing here, because the physical release was already passed through at the top.
         }
-            write_ev(&ie); //pass ev to stdout
     }
     return 0;
 }
