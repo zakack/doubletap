@@ -27,6 +27,7 @@ static struct {
 
 	atomic_int   pending;
 	atomic_bool  playing;
+	atomic_bool  reset;
 	atomic_size_t frame_pos;
 } audio;
 
@@ -146,6 +147,9 @@ static void on_process(void *userdata)
 	}
 
 	if (atomic_load_explicit(&audio.playing, memory_order_acquire)) {
+		if (atomic_exchange(&audio.reset, false))
+			atomic_store(&audio.frame_pos, 0);
+
 		size_t pos = atomic_load(&audio.frame_pos);
 		size_t rem = audio.num_frames - pos;
 		size_t tc  = nf < rem ? nf : rem;
@@ -164,6 +168,8 @@ static void on_process(void *userdata)
 				atomic_store(&audio.frame_pos, 0);
 				atomic_fetch_sub(&audio.pending, 1);
 			}
+		} else if (atomic_exchange(&audio.reset, false)) {
+			atomic_store(&audio.frame_pos, 0);
 		} else {
 			atomic_store(&audio.frame_pos, pos);
 		}
@@ -237,7 +243,10 @@ static int audio_init(void)
 
 static void audio_trigger(void)
 {
-	if (audio_available)
+	if (!audio_available) return;
+	if (atomic_load(&audio.playing))
+		atomic_store(&audio.reset, true);
+	else
 		atomic_fetch_add(&audio.pending, 1);
 }
 
@@ -378,6 +387,7 @@ int main(int argc, char *argv[]) {
 					act = !act;
 					struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
 					write_ev(&press_ev);
+					audio_trigger();
 				} else {
 					struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
 					write_ev(&rel_ev);
