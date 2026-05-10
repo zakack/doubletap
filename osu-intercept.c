@@ -358,13 +358,13 @@ int main(int argc, char *argv[]) {
 			if (key1_pressed && key2_pressed) {
 				struct input_event rel_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
 				write_ev(&rel_ev);
+				write_ev(&syn_ev);
 				act = !act;
 			} else {
 				act = (ie.code == last_key2);
 			}
 			struct input_event press_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
 			write_ev(&press_ev);
-			write_ev(&syn_ev);
 			audio_trigger();
 		} else if (ie.value == 0) {
 			int is_tracked = 0;
@@ -379,6 +379,7 @@ int main(int argc, char *argv[]) {
 				if (key1_pressed || key2_pressed) {
 					struct input_event rel_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
 					write_ev(&rel_ev);
+					write_ev(&syn_ev);
 
 					act = !act;
 					struct input_event press_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
@@ -389,7 +390,6 @@ int main(int argc, char *argv[]) {
 					write_ev(&rel_ev);
 					act = 0;
 				}
-				write_ev(&syn_ev);
 			}
 		}
         if (ie.code != V1 && ie.code != V2) {
