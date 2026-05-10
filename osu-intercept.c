@@ -9,8 +9,8 @@
 #include <spa/param/audio/format-utils.h>
 #include <pipewire/pipewire.h>
 
-#define V1 KEY_Z
-#define V2 KEY_X
+#define V1 KEY_F13
+#define V2 KEY_F14
 #define WAV_PATH "/usr/local/share/osu-intercept/click.wav"
 
 static volatile sig_atomic_t g_running = 1;
@@ -333,15 +333,17 @@ int main(int argc, char *argv[]) {
 	int act = 0;
 
 	while (g_running && read_ev(&ie)) {
-		if (ie.type != EV_KEY) {
-			write_ev(&ie);
-			continue;
-		}
-
-		write_ev(&ie);
-
-		if (ie.value == 2) continue;
-
+		struct input_event syn_ev = { .time = ie.time, .type = EV_SYN, .code = SYN_REPORT, .value = 0 };
+        if (ie.type != EV_KEY) {
+            write_ev(&ie);
+            continue;
+        }
+        if (ie.value == 2) {
+            if (ie.code != V1 && ie.code != V2) {
+                write_ev(&ie); 
+            }
+            continue; 
+        }
 		if (ie.value == 1) {
 			if (ie.code == last_key1) {
 				key1_pressed = 1;
@@ -353,25 +355,19 @@ int main(int argc, char *argv[]) {
 				key1_pressed = key2_pressed;
 				key2_pressed = 1;
 			}
-
 			if (key1_pressed && key2_pressed) {
-				struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
+				struct input_event rel_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
 				write_ev(&rel_ev);
-
 				act = !act;
-				struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
-				write_ev(&press_ev);
-				audio_trigger();
 			} else {
 				act = (ie.code == last_key2);
-				struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
-				write_ev(&press_ev);
-				audio_trigger();
 			}
-
+			struct input_event press_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
+			write_ev(&press_ev);
+			write_ev(&syn_ev);
+			audio_trigger();
 		} else if (ie.value == 0) {
 			int is_tracked = 0;
-
 			if (ie.code == last_key1) {
 				key1_pressed = 0;
 				is_tracked = 1;
@@ -379,25 +375,27 @@ int main(int argc, char *argv[]) {
 				key2_pressed = 0;
 				is_tracked = 1;
 			}
-
 			if (is_tracked) {
 				if (key1_pressed || key2_pressed) {
-					struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
+					struct input_event rel_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
 					write_ev(&rel_ev);
 
 					act = !act;
-					struct input_event press_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
+					struct input_event press_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 1 };
 					write_ev(&press_ev);
 					audio_trigger();
 				} else {
-					struct input_event rel_ev = { .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
+					struct input_event rel_ev = { .time = ie.time, .type = EV_KEY, .code = act ? v2_code : v1_code, .value = 0 };
 					write_ev(&rel_ev);
 					act = 0;
 				}
+				write_ev(&syn_ev);
 			}
 		}
+        if (ie.code != V1 && ie.code != V2) {
+            write_ev(&ie);
+        }
 	}
-
 	audio_cleanup();
 	return 0;
 }
