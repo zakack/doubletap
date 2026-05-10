@@ -1,3 +1,3 @@
-- JOB: "intercept -g $DEVNODE | osu-intercept | uinput -d $DEVNODE"
+- JOB: intercept -g $DEVNODE | /usr/local/bin/osu-intercept -Z 183 -X 184 | uinput -d $DEVNODE
   DEVICE:
     LINK: /dev/input/by-id/.*event-kbd

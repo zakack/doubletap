@@ -11,6 +11,7 @@
 
 #define V1 KEY_Z
 #define V2 KEY_X
+#define WAV_PATH "/usr/local/share/osu-intercept/click.wav"
 
 static volatile sig_atomic_t g_running = 1;
 
@@ -316,7 +317,7 @@ int main(int argc, char *argv[]) {
 	setbuf(stdin, NULL);
 	setbuf(stdout, NULL);
 
-	if (wav_load("click.wav") == 0 && audio_init() == 0)
+	if (wav_load(WAV_PATH) == 0 && audio_init() == 0)
 		audio_available = 1;
 
 	struct sigaction sa = { .sa_handler = on_signal };
