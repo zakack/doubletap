@@ -1,2 +1,0 @@
-#!/bin/bash
-intercept -g /dev/input/by-id/usb-Wooting_Wooting_60HE+_A02B2446W05T01100S02H05140-if01-event-kbd | /usr/local/bin/osu-intercept -Z 183 -X 184 | uinput -d /dev/input/by-id/usb-Wooting_Wooting_60HE+_A02B2446W05T01100S02H05140-if01-event-kbd
