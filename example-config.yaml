@@ -1,21 +1,20 @@
 # osu-intercept daemon configuration
 # Find your keyboard device with: ls /dev/input/by-id/
 
-# REQUIRED: Path to the keyboard evdev device to grab
-device: "/dev/input/by-id/usb-Wooting_60HE-event-kbd"
+# REQUIRED: Replace with the path to your keyboard
+device: "/dev/input/by-id/usb-Wooting_Wooting_60HE+_A02B2446W05T01100S02H05140-if01-event-kbd"
 
-# Audio playback (optional section, remove to disable)
+# Path to WAV hitsound file (comment out to disable)
 audio:
-  # Path to WAV file played on virtual key press
   wav_path: "/usr/local/share/osu-intercept/click.wav"
 
-# Key mapping (optional section)
+# Keyboard Key Selection
 mapping:
-  # Which physical key codes trigger the SOCD state machine
+  # These are the physical keyboard keys used
   # Empty list = all keys trigger (default)
   # Example: [30, 48] for KEY_A and KEY_B only
   trigger_keys: []
 
-  # Virtual key codes emitted by the SOCD state machine
+  # These are the two virtual keys that are toggled between
   # Must be exactly 2 values. Defaults: KEY_F13 (183) and KEY_F14 (184)
   virtual_keys: [183, 184]
