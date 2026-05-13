@@ -1,3 +1,21 @@
-- JOB: intercept -g $DEVNODE | osu-intercept | uinput -d $DEVNODE
-  DEVICE:
-    LINK: /dev/input/by-id/.*kbd
+# osu-intercept daemon configuration
+# Find your keyboard device with: ls /dev/input/by-id/
+
+# REQUIRED: Path to the keyboard evdev device to grab
+device: "/dev/input/by-id/usb-Wooting_60HE-event-kbd"
+
+# Audio playback (optional section, remove to disable)
+audio:
+  # Path to WAV file played on virtual key press
+  wav_path: "/usr/local/share/osu-intercept/click.wav"
+
+# Key mapping (optional section)
+mapping:
+  # Which physical key codes trigger the SOCD state machine
+  # Empty list = all keys trigger (default)
+  # Example: [30, 48] for KEY_A and KEY_B only
+  trigger_keys: []
+
+  # Virtual key codes emitted by the SOCD state machine
+  # Must be exactly 2 values. Defaults: KEY_F13 (183) and KEY_F14 (184)
+  virtual_keys: [183, 184]

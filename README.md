@@ -1,6 +1,76 @@
-# osu-intercept
-> *interception-tools* plugin that allows two physical keyboard keys to control two mutually-exclusive virtual keys.
-## why
-The plugin acts as a sort-of "Last Input" SOCD-cleaner on steroids. If the opposite key is pressed while one is held down, then it wins, *but* then when a key is released, it reverts back to the previous input, creating an extra key-press. Releasing the last key held releases the remaining virtual key, and resets the state back to the starting position. This promotes a sort of "rocking" or "wobbling" play pattern when fast key alternation is needed without interfering with single-key tapping. This can be particularly helpful in games requiring precise and rapid inputs, such as osu! or other rhythm-based titles.
-## how
-The tiny C99 plugin uses [interception-tools] (https://gitlab.com/interception/linux/tools), which grabs keyboards inputs from the kernel, but before they reach Xorg or Wayland. It monitors two physical keys and maps their presses and releases to two virtual keys accordingly. When a key is pressed, it triggers one virtual key; when another key is pressed while the first is held, it toggles to the other virtual key "radio button"-style. Then, when either key is released, the virtual keys toggle again, causing a key-release event to become both a key-press event and a key-release event. Releasing the last physical key simply releases whichever virtual key is currently 'pressed'. A bit hard to describe, but easy to pick up; and much better for osu!'s usually odd-numbered bursts and streams, compared to simply having every key-release be a key-press.
+# osu-intercept — Keyboard SOCD Filter Daemon
+
+A standalone Linux daemon that applies SOCD (Simultaneous Opposite Cardinal Direction) cleaning to keyboard input with real-time audio feedback. Designed for rhythm games like osu!
+
+## What It Does
+
+- Grabs a physical keyboard device via evdev
+- Tracks the last two pressed keys with LRU ordering
+- Emits two mutually-exclusive virtual keys (radio-button toggle behavior)
+- Plays a WAV click sound on every virtual key press via PipeWire
+- All other keys pass through normally to a virtual uinput device
+- Drops root privileges after device setup
+
+## How It Works
+
+```
+Physical Keyboard → [evdev grab] → SOCD State Machine → [uinput virtual device] → Applications
+                                              ↓
+                                    PipeWire Audio Click
+```
+
+- Press a key → virtual key 1 pressed, click plays
+- Press a different key while first held → virtual key 1 released, virtual key 2 pressed, click plays
+- Release a key while the other is held → virtual key toggles back, click plays
+- Release the last key → virtual key released, state resets
+
+This promotes a "rocking" or "wobbling" play pattern when fast key alternation is needed without interfering with single-key tapping. Particularly useful for osu! and other rhythm games with odd-numbered bursts and streams.
+
+## Requirements
+
+- Linux kernel with uinput support (`CONFIG_INPUT_UINPUT`)
+- libevdev, libpipewire-0.3, libyaml
+- CMake and a C99 compiler
+- Root access (for evdev grab and uinput device creation)
+
+## Installation
+
+```bash
+cmake -B build && cmake --build build
+sudo cmake --install build
+```
+
+## Configuration
+
+Edit `/etc/osu-intercept/config.yaml`:
+
+```yaml
+device: "/dev/input/by-id/usb-Wooting_60HE-event-kbd"  # Your keyboard
+audio:
+  wav_path: "/usr/local/share/osu-intercept/click.wav"
+mapping:
+  trigger_keys: []          # All keys trigger SOCD; or [30, 48] for specific keys
+  virtual_keys: [183, 184]  # KEY_F13, KEY_F14
+```
+
+## Finding Your Keyboard
+
+```bash
+ls /dev/input/by-id/              # List all input devices by ID
+sudo evtest                       # Interactive device tester — press keys to identify
+```
+
+## Service Management
+
+```bash
+sudo systemctl enable --now osu-intercept
+sudo systemctl status osu-intercept
+sudo journalctl -u osu-intercept  # View logs
+```
+
+## Troubleshooting
+
+- **"Cannot access device"**: Check device path in config. Try `sudo evtest` to verify.
+- **"uinput create failed"**: Ensure `uinput` kernel module is loaded: `sudo modprobe uinput`
+- **No audio**: Ensure PipeWire is running: `systemctl --user status pipewire`
+- **Permission denied**: The daemon must run as root initially (drops to nobody after setup)
