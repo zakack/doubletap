@@ -1,0 +1,19 @@
+[Unit]
+Description=osu-intercept SOCD-cleaning input daemon
+Documentation=file:///usr/share/osu-intercept/config.yaml
+Wants=systemd-udev-settle.service pipewire.service
+After=systemd-udev-settle.service pipewire.service wireplumber.service pipewire-pulse.service
+
+[Service]
+Type=simple
+ExecStart=osu-interceptd -c %D/osu-intercept/config.yaml
+Restart=on-failure
+RestartSec=2s
+Environment=PIPEWIRE_SOCKET=%t/pipewire-0
+Environment=PULSE_SERVER=unix:%t/pipewire-0
+Environment=PIPEWIRE_LATENCY=32/96000
+
+# The daemon needs read access to /dev/input/event* and read/write access
+# to /dev/uinput. Running as root is the simplest option; if you prefer
+# tighter isolation, set up a dedicated user in the `input` group plus a
+# udev rule giving /dev/uinput group=input mode=0660.
