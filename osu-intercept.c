@@ -392,7 +392,7 @@ int main(int argc, char *argv[]) {
             act = 0;  //reset active flag
         }
             write_ev(&ie); //pass ev to stdout
-			audio_trigger();
+			if (ie.code) audio_trigger();
     }
 	audio_cleanup();
     return 0;
