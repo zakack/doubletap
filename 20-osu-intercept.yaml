@@ -1,3 +1,0 @@
-- JOB: "intercept -g $DEVNODE | osu-intercept | uinput -d $DEVNODE"
-  DEVICE:
-    LINK: /dev/input/by-id/.*event-kbd

@@ -1,0 +1,31 @@
+# osu-intercept configuration
+#
+# This daemon grabs the listed keyboard devices, applies a SOCD-cleaning
+# state machine to two configurable keys (k1/k2 -> v1/v2), and re-emits
+# everything via a single uinput virtual keyboard. It also plays a click
+# sound through PipeWire on every virtual keypress.
+#
+# After editing this file, restart the daemon:
+#   sudo systemctl restart osu-intercept
+
+# Keyboard devices to grab. REQUIRED. Use the stable /dev/input/by-id/*
+# paths so symlinks survive replug. Add as many entries as you like.
+devices:
+  - /dev/input/by-id/CHANGE-ME-event-kbd
+
+# Key mapping. Codes can be symbolic ("KEY_Z") or numeric (44).
+# See /usr/include/linux/input-event-codes.h for the full list.
+keys:
+  k1: KEY_Z
+  k2: KEY_X
+  v1: KEY_F13
+  v2: KEY_F14
+
+# Audio click on each virtual keypress.
+audio:
+  enabled: true
+  wav: /usr/share/osu-intercept/click.wav
+
+# Identification of the virtual uinput keyboard.
+uinput:
+  name: "osu-intercept virtual keyboard"
