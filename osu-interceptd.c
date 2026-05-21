@@ -11,11 +11,11 @@
  */
 
 #define _GNU_SOURCE
-#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <signal.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -28,6 +28,7 @@
 
 #include <sys/epoll.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 
 #include <linux/input.h>
 
@@ -906,9 +907,18 @@ main(int argc, char **argv) {
              v1n ? v1n : "?", cfg.v1, v2n ? v2n : "?", cfg.v2,
              cfg.audio_enabled ? "enabled" : "disabled");
 
+	/* use rt scheduler if we can */
+    struct sched_param sp = { .sched_priority = 90 };
+    if (sched_setscheduler(0, SCHED_FIFO, &sp) < 0) {
+        LOG_WARN("Failed to set SCHED_FIFO: %s. Falling back to standard scheduler.", strerror(errno));
+    } else {
+        LOG_INFO("Successfully acquired SCHED_FIFO real-time priority.");
+    }
+
     /* best-effort audio init  */
     if (cfg.audio_enabled) {
         if (wav_load(cfg.wav_path) == 0 && audio_init() == 0) {
+            mlockall(MCL_CURRENT | MCL_FUTURE);
             audio_available = 1;
         } else {
             LOG_WARN("Audio disabled (WAV load or PipeWire init failed)");
