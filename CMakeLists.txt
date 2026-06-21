@@ -43,3 +43,4 @@ target_link_libraries(osu-interceptd PRIVATE
 install(TARGETS osu-interceptd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES   config.yaml             DESTINATION ${CMAKE_INSTALL_DATADIR}/osu-intercept)
 install(FILES   osu-intercept.service   DESTINATION ${CMAKE_INSTALL_DATADIR}/osu-intercept)
+install(FILES   click.wav               DESTINATION ${CMAKE_INSTALL_DATADIR}/osu-intercept)

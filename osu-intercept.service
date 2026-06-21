@@ -11,7 +11,7 @@ Restart=on-failure
 RestartSec=2s
 Environment=PIPEWIRE_SOCKET=%t/pipewire-0
 Environment=PULSE_SERVER=unix:%t/pipewire-0
-Environment=PIPEWIRE_LATENCY=32/96000
+Environment=PIPEWIRE_LATENCY=16/48000
 
 # The daemon needs read access to /dev/input/event* and read/write access
 # to /dev/uinput. Running as root is the simplest option; if you prefer
