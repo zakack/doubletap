@@ -1,30 +1,34 @@
 # osu-intercept configuration
 #
-# This daemon grabs the listed keyboard devices, applies a SOCD-cleaning
+# The daemon grabs the listed keyboard devices, applies a SOCD-cleaning
 # state machine to two configurable keys (k1/k2 -> v1/v2), and re-emits
 # everything via a single uinput virtual keyboard. It also plays a click
 # sound through PipeWire on every virtual keypress.
 #
-# After editing this file, restart the daemon:
-#   sudo systemctl restart osu-intercept
+# Copy this file to ~/.config/osu-intercept/config.yaml and edit it there;
+# the daemon prefers that path over the installed copy in /usr/share.
+# After editing, restart the daemon:
+#   systemctl --user restart osu-intercept
 
 # Keyboard devices to grab. REQUIRED. Use the stable /dev/input/by-id/*
-# paths so symlinks survive replug. Add as many entries as you like.
+# paths so symlinks survive replug (ls /dev/input/by-id/ and pick the
+# *-event-kbd entry for your keyboard). Add as many entries as you like.
 devices:
-  - /dev/input/by-id/usb-Wooting_Wooting_60HE+_A02B2446W05T01100S02H05140-if01-event-kbd
+  - /dev/input/by-id/CHANGE-ME-event-kbd
 
 # Key mapping. Codes can be symbolic ("KEY_Z") or numeric (44).
 # See /usr/include/linux/input-event-codes.h for the full list.
 keys:
-  k1: KEY_LEFTCTRL
-  k2: KEY_LEFTALT
-  v1: KEY_LEFTCTRL
-  v2: KEY_LEFTALT
+  k1: KEY_Z
+  k2: KEY_X
+  v1: KEY_Z
+  v2: KEY_X
 
-# Audio click on each virtual keypress.
+# Audio click on each virtual keypress. `wav` defaults to the click sample
+# installed alongside this file; point it at any 16/24/32-bit PCM WAV.
 audio:
   enabled: true
-  wav: /home/zak/.config/osu-lazer/click.wav
+  wav: /usr/share/osu-intercept/click.wav
 
 # Identification of the virtual uinput keyboard.
 uinput:

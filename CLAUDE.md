@@ -31,21 +31,29 @@ by building and manually exercising the daemon (see Running below).
 
 ## Running
 
-The daemon needs read access to `/dev/input/event*` and read/write access to
-`/dev/uinput`, so it's normally run as root (or a user in the `input` group
-with a udev rule granting uinput access — see `osu-intercept.service`).
+The daemon is designed to run as an unprivileged user in the `input` group:
+that covers read access to `/dev/input/event*`, and the packaged udev rule
+(`70-osu-intercept-uinput.rules`) opens `/dev/uinput` to the same group. It
+must NOT run as a root system service — PipeWire is a per-user session
+daemon, so audio only works from inside a user session. The systemd unit
+(`osu-intercept.service.in`, configured by CMake) is a *user* unit:
+`systemctl --user enable --now osu-intercept`.
 
 ```sh
-sudo ./build/osu-interceptd -c config.yaml
+./build/osu-interceptd -c config.yaml
 ```
 
-`-c` points to a YAML config (default `/usr/share/osu-intercept/config.yaml`).
-See `config.yaml` for the schema: `devices` (required list of
+Without `-c`, the daemon looks for
+`$XDG_CONFIG_HOME/osu-intercept/config.yaml` (`~/.config` if unset), then
+falls back to the installed default (`/usr/share/osu-intercept/config.yaml`;
+CMake bakes the real prefix in via `DEF_CONFIG`/`DEF_WAV` compile
+definitions). See `config.yaml` for the schema: `devices` (required list of
 `/dev/input/by-id/*` paths), `keys` (k1/k2 physical -> v1/v2 virtual, symbolic
 `KEY_*` names or numeric codes), `audio` (enabled + wav path), `uinput`
 (virtual device name). After editing config, restart via
-`sudo systemctl restart osu-intercept` when installed as the systemd unit in
-`osu-intercept.service`.
+`systemctl --user restart osu-intercept`.
+
+`packaging/arch/` holds an AUR-style `-git` PKGBUILD.
 
 ## Architecture
 

@@ -49,8 +49,14 @@
 #define DEF_V1     KEY_F13
 #define DEF_V2     KEY_F14
 #define DEF_NAME   "osu-intercept virtual keyboard"
+
+/* Installed data paths; CMake overrides these to match the install prefix. */
+#ifndef DEF_WAV
 #define DEF_WAV    "/usr/share/osu-intercept/click.wav"
+#endif
+#ifndef DEF_CONFIG
 #define DEF_CONFIG "/usr/share/osu-intercept/config.yaml"
+#endif
 
 /* ------------------------------------------------------------------------- */
 /* Logging                                                                   */
@@ -869,13 +875,40 @@ static void print_usage(FILE *s, const char *prog) {
         "\n"
         "options:\n"
         "    -h          show this help and exit\n"
-        "    -c CONFIG   path to YAML config (default: %s)\n",
+        "    -c CONFIG   path to YAML config\n"
+        "\n"
+        "Without -c, the config is looked up at\n"
+        "$XDG_CONFIG_HOME/osu-intercept/config.yaml (~/.config if unset),\n"
+        "falling back to %s.\n",
         prog, DEF_CONFIG);
+}
+
+/* Resolve the config path when -c wasn't given: prefer the per-user XDG
+ * config, fall back to the installed default. */
+static const char *default_config_path(void) {
+    static char path[4096];
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    int n;
+
+    if (xdg && *xdg) {
+        n = snprintf(path, sizeof(path), "%s/osu-intercept/config.yaml", xdg);
+    } else {
+        const char *home = getenv("HOME");
+        if (!home || !*home)
+            return DEF_CONFIG;
+        n = snprintf(path, sizeof(path), "%s/.config/osu-intercept/config.yaml",
+                     home);
+    }
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return DEF_CONFIG;
+    if (access(path, R_OK) == 0)
+        return path;
+    return DEF_CONFIG;
 }
 
 int
 main(int argc, char **argv) {
-    const char *config_path = DEF_CONFIG;
+    const char *config_path = NULL;
 
     for (int opt; (opt = getopt(argc, argv, "hc:")) != -1; ) {
         switch (opt) {
@@ -890,6 +923,10 @@ main(int argc, char **argv) {
             return EXIT_FAILURE;
         }
     }
+
+    if (!config_path)
+        config_path = default_config_path();
+    LOG_INFO("Using config %s", config_path);
 
     oid_config_t cfg;
     config_init(&cfg);
