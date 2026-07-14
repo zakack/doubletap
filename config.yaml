@@ -16,6 +16,15 @@
 devices:
   - /dev/input/by-id/CHANGE-ME-event-kbd
 
+# SOCD-cleaning mode. Both suppress the older key when both are held; they
+# differ in what happens when one of two held keys is released:
+#   toggle - reverting toggle (latching): releasing EITHER key re-presses
+#            the other virtual key.
+#   snappy - "Snappy Tappy" / last input wins: only releasing the ACTIVE
+#            key falls back to the still-held one; releasing the already
+#            suppressed key does nothing.
+mode: toggle
+
 # Key mapping. Codes can be symbolic ("KEY_Z") or numeric (44).
 # See /usr/include/linux/input-event-codes.h for the full list.
 keys:

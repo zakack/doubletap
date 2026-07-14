@@ -7,8 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `osu-interceptd` is a single-file C11 daemon that acts as a SOCD (Simultaneous
 Opposing Cardinal Directions) cleaner for two keyboard keys. It exclusively
 grabs one or more evdev keyboard devices at the kernel level (before
-Xorg/Wayland see them), applies a "last-input + reverting toggle" state
-machine to two configured physical keys, and re-emits all input through a
+Xorg/Wayland see them), applies a SOCD state machine to two configured
+physical keys — either "toggle" (last-input + reverting toggle) or "snappy"
+(last input wins, no latching), selected by the top-level `mode` config
+field — and re-emits all input through a
 single uinput virtual keyboard. It also plays a click sound via PipeWire on
 every virtual keypress. Built for rhythm games (osu!) where fast key
 alternation needs a "rocking" input pattern instead of naive SOCD handling.
@@ -48,8 +50,9 @@ Without `-c`, the daemon looks for
 falls back to the installed default (`/usr/share/osu-intercept/config.yaml`;
 CMake bakes the real prefix in via `DEF_CONFIG`/`DEF_WAV` compile
 definitions). See `config.yaml` for the schema: `devices` (required list of
-`/dev/input/by-id/*` paths), `keys` (k1/k2 physical -> v1/v2 virtual, symbolic
-`KEY_*` names or numeric codes), `audio` (enabled + wav path), `uinput`
+`/dev/input/by-id/*` paths), `mode` (`toggle` default, or `snappy`), `keys`
+(k1/k2 physical -> v1/v2 virtual, symbolic `KEY_*` names or numeric codes),
+`audio` (enabled + wav path), `uinput`
 (virtual device name). After editing config, restart via
 `systemctl --user restart osu-intercept`.
 
@@ -81,7 +84,11 @@ sections (search for the `/* --- */` banner comments):
    (`S_NONE`, `S_RELEASE`, `S_SINGLE`, `S_PRESS`) that decide whether to
    emit a virtual key-down, a release, or an release-then-press pair (the
    "reverting toggle" that recreates a keypress when the active key is
-   released while the other is still held). Autorepeat (`value == 2`) is
+   released while the other is still held). The `S_RELEASE` case is
+   mode-dependent: `MODE_TOGGLE` reverts no matter which of the two held
+   keys was released (latching), while `MODE_SNAPPY` ("last input wins")
+   only reverts when the *active* key is released — releasing the
+   already-suppressed key emits nothing. Autorepeat (`value == 2`) is
    ignored to avoid corrupting state.
 
 5. **Event loop** (`run_loop`/`drain_device`) — a single-threaded

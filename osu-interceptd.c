@@ -2,8 +2,9 @@
  * osu-interceptd - Rapid-fire virtual keyboard daemon
  *
  * The daemon directly opens (and exclusively grabs) one or more evdev
- * keyboard devices, applies a "last-input + reverting toggle" SOCD state
- * machine to two configurable physical keys (k1, k2 -> v1, v2), mirrors
+ * keyboard devices, applies a SOCD state machine ("toggle" = last-input +
+ * reverting toggle, or "snappy" = last input wins, per the config's mode
+ * field) to two configurable physical keys (k1, k2 -> v1, v2), mirrors
  * every other event verbatim into a single uinput virtual keyboard, and
  * plays a click sound through PipeWire on every virtual key-press.
  *
@@ -347,10 +348,17 @@ static void audio_cleanup(void) {
 /* Config                                                                    */
 /* ------------------------------------------------------------------------- */
 
+/* SOCD-cleaning behavior for k1/k2 (see process_event). */
+enum {
+    MODE_TOGGLE = 0, /* last-input + reverting toggle (latching) */
+    MODE_SNAPPY = 1, /* last input wins; only the active key's release reverts */
+};
+
 typedef struct {
     char   **device_paths;
     size_t   n_devices;
     int      k1, k2, v1, v2;
+    int      mode;
     int      audio_enabled;
     char    *wav_path;
     char    *uinput_name;
@@ -522,6 +530,21 @@ static int load_config(const char *path, oid_config_t *c) {
                 LOG_ERR("invalid key code for 'keys.%s'", kmap[i].name);
                 goto out;
             }
+        }
+    }
+
+    /* mode: optional scalar */
+    yaml_node_t *mode = map_get(&doc, root, "mode");
+    if (mode) {
+        const char *s = mode->type == YAML_SCALAR_NODE
+                        ? (const char *)mode->data.scalar.value : "";
+        if (!strcasecmp(s, "toggle"))
+            c->mode = MODE_TOGGLE;
+        else if (!strcasecmp(s, "snappy") || !strcasecmp(s, "snappy-tappy"))
+            c->mode = MODE_SNAPPY;
+        else {
+            LOG_ERR("'mode' must be \"toggle\" or \"snappy\"");
+            goto out;
         }
     }
 
@@ -708,6 +731,11 @@ static void destroy_virtual(void) {
  *     1 = RELEASE  two keys held -> one released
  *     2 = SINGLE   first key pressed (zero -> one)
  *     3 = PRESS    one key held -> second pressed (one -> two)
+ *
+ * RELEASE depends on cfg->mode: MODE_TOGGLE reverts to the other key no
+ * matter which of the two was released (latching), MODE_SNAPPY ("last
+ * input wins") only falls through to the still-held key when the active
+ * key is the one released.
  */
 enum { S_NONE = 0, S_RELEASE = 1, S_SINGLE = 2, S_PRESS = 3 };
 
@@ -742,6 +770,12 @@ static int process_event(input_dev_t *in, const struct input_event *ie, const oi
         triggered = 1;
         break;
         case S_RELEASE:
+        /* Snappy mode: releasing the non-active (already suppressed) key
+         * changes nothing; only the active key's release falls through to
+         * the still-held one. Toggle mode reverts on either release. */
+        if (cfg->mode == MODE_SNAPPY && is_k1 != in->act)
+            break;
+        /* fallthrough */
         case S_PRESS:
         up_code   = in->act ? cfg->v1 : cfg->v2;
         down_code = in->act ? cfg->v2 : cfg->v1;
@@ -867,8 +901,9 @@ static void print_usage(FILE *s, const char *prog) {
     fprintf(s,
         "osu-interceptd - SOCD-cleaning input daemon\n"
         "\n"
-        "Grabs evdev keyboard devices, applies a last-input + reverting-toggle\n"
-        "radio button filter to two configurable keys, and re-emits everything via a\n"
+        "Grabs evdev keyboard devices, applies a SOCD radio-button filter (reverting\n"
+        "toggle or snappy last-input-wins, per the config's 'mode' field) to two\n"
+        "configurable keys, and re-emits everything via a\n"
         "single uinput virtual keyboard. Plays a click on each virtual keypress.\n"
         "\n"
         "usage: %s [-h] [-c CONFIG]\n"
@@ -938,10 +973,11 @@ main(int argc, char **argv) {
     const char *v1n = libevdev_event_code_get_name(EV_KEY, cfg.v1);
     const char *v2n = libevdev_event_code_get_name(EV_KEY, cfg.v2);
     LOG_INFO("Config: %zu device(s), keys k1=%s(%d) k2=%s(%d) "
-             "v1=%s(%d) v2=%s(%d), audio=%s",
+             "v1=%s(%d) v2=%s(%d), mode=%s, audio=%s",
              cfg.n_devices,
              k1n ? k1n : "?", cfg.k1, k2n ? k2n : "?", cfg.k2,
              v1n ? v1n : "?", cfg.v1, v2n ? v2n : "?", cfg.v2,
+             cfg.mode == MODE_SNAPPY ? "snappy" : "toggle",
              cfg.audio_enabled ? "enabled" : "disabled");
 
 	/* use rt scheduler if we can */
