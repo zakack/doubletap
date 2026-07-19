@@ -1,29 +1,40 @@
-# osu-intercept configuration
+# doubletap configuration
 #
-# The daemon grabs the listed keyboard devices, applies a SOCD-cleaning
-# state machine to two configurable keys (k1/k2 -> v1/v2), and re-emits
-# everything via a single uinput virtual keyboard. It also plays a click
-# sound through PipeWire on every virtual keypress.
+# The daemon grabs keyboard devices (auto-discovered, or an explicit list),
+# applies a SOCD-cleaning state machine to two configurable keys
+# (k1/k2 -> v1/v2), and re-emits everything via a single uinput virtual
+# keyboard. It also plays a click sound through PipeWire on every virtual
+# keypress. Devices are hotplug-aware either way: unplugged keyboards are
+# dropped and re-grabbed when they come back.
 #
-# Copy this file to ~/.config/osu-intercept/config.yaml and edit it there;
+# Copy this file to ~/.config/doubletap/config.yaml and edit it there;
 # the daemon prefers that path over the installed copy in /usr/share.
 # After editing, restart the daemon:
-#   systemctl --user restart osu-intercept
+#   systemctl --user restart doubletap
 
-# Keyboard devices to grab. REQUIRED. Use the stable /dev/input/by-id/*
-# paths so symlinks survive replug (ls /dev/input/by-id/ and pick the
-# *-event-kbd entry for your keyboard). Add as many entries as you like.
-devices:
-  - /dev/input/by-id/CHANGE-ME-event-kbd
+# Keyboard devices to grab. OPTIONAL. When omitted (or set to the scalar
+# "auto"), every keyboard-shaped device that has both k1 and k2 is grabbed
+# automatically: real keyboards only (no mice/touchpads, no other virtual
+# keyboards such as those created by keyd or doubletap itself).
+#
+# To pin specific keyboards instead, list them explicitly. Use the stable
+# /dev/input/by-id/* paths so the entries survive replug
+# (ls /dev/input/by-id/ and pick the *-event-kbd entry for your keyboard).
+#
+# devices:
+#   - /dev/input/by-id/CHANGE-ME-event-kbd
 
-# SOCD-cleaning mode. Both suppress the older key when both are held; they
-# differ in what happens when one of two held keys is released:
+# SOCD-cleaning mode. toggle and snappy both suppress the older key when
+# both are held; they differ in what happens when one of two held keys is
+# released:
 #   toggle - reverting toggle (latching): releasing EITHER key re-presses
-#            the other virtual key.
+#            the other virtual key. "on" is a synonym.
 #   snappy - "Snappy Tappy" / last input wins: only releasing the ACTIVE
 #            key falls back to the still-held one; releasing the already
 #            suppressed key does nothing.
-mode: toggle
+#   off    - no SOCD cleaning: k1/k2 are simply remapped to v1/v2
+#            (audio click still plays on each press).
+socd: toggle
 
 # Key mapping. Codes can be symbolic ("KEY_Z") or numeric (44).
 # See /usr/include/linux/input-event-codes.h for the full list.
@@ -37,8 +48,8 @@ keys:
 # installed alongside this file; point it at any 16/24/32-bit PCM WAV.
 audio:
   enabled: true
-  wav: /usr/share/osu-intercept/click.wav
+  wav: /usr/share/doubletap/click.wav
 
 # Identification of the virtual uinput keyboard.
 uinput:
-  name: "osu-intercept virtual keyboard"
+  name: "doubletap virtual keyboard"

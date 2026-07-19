@@ -1,0 +1,4 @@
+# Let members of the `input` group open /dev/uinput, so doubletapd can
+# run as an unprivileged systemd user service. static_node makes the node
+# exist at boot; opening it autoloads the uinput module.
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
