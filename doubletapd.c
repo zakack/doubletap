@@ -2497,7 +2497,12 @@ static void analog_dev_close(analog_dev_t *ad) {
  * Both keys are emitted on every line even when only one moved, because a
  * released key vanishes from the report rather than reporting a zero, so
  * the absent one really is at rest. Timestamps are monotonic microseconds
- * from the first report. */
+ * since `t0_monotonic_ns` in the header, which is taken just before it is
+ * written. The header carries that origin in BOTH clocks so a trace can be
+ * lined up with anything else on the machine: monotonic against PipeWire's
+ * graph clock and our own evdev stamps, realtime against logs that print
+ * wall time. The two reads are back to back, so the pair agrees to a few
+ * microseconds. Readers that predate the anchors skip them as comments. */
 static int analog_trace(const oid_config_t *cfg, const char *input_dir) {
     analog_dev_t *ad = analog_dev_open(cfg, input_dir);
     if (!ad)
@@ -2509,15 +2514,21 @@ static int analog_trace(const oid_config_t *cfg, const char *input_dir) {
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
+    struct timespec t0, t0_real;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    clock_gettime(CLOCK_REALTIME,  &t0_real);
+
     printf("# doubletapd trace v1\n");
     printf("# travel_mm=%.4f\n", (double)cfg->analog.travel_mm);
+    printf("# t0_monotonic_ns=%lld\n",
+           (long long)t0.tv_sec * 1000000000LL + t0.tv_nsec);
+    printf("# t0_realtime_ns=%lld\n",
+           (long long)t0_real.tv_sec * 1000000000LL + t0_real.tv_nsec);
     printf("us,k1_mm,k2_mm\n");
     fflush(stdout);
 
     LOG_INFO("Tracing k1/k2 travel to stdout. Play normally; Ctrl-C to stop.");
 
-    struct timespec t0;
-    int             have_t0 = 0;
     unsigned long   lines   = 0;
 
     while (g_running) {
@@ -2539,7 +2550,6 @@ static int analog_trace(const oid_config_t *cfg, const char *input_dir) {
 
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        if (!have_t0) { t0 = now; have_t0 = 1; }
         long long us = (long long)(now.tv_sec - t0.tv_sec) * 1000000
                      + (now.tv_nsec - t0.tv_nsec) / 1000;
 

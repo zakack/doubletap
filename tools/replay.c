@@ -158,12 +158,15 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
         analog_report(&ad, cfg, depth, (uint64_t)tr->f[i].us * 1000ull);
 
         if (!was && ad.deep) {
+            /* From the first report, not from `us` = 0: an anchored trace
+             * counts `us` from the header's t0, a little before that. */
+            long long at = tr->f[i].us - tr->f[0].us;
             g_run.engagements++;
             if (g_run.first_engage_us < 0)
-                g_run.first_engage_us = tr->f[i].us;
+                g_run.first_engage_us = at;
             if (g_verbose)
                 printf("  latched at %8.3fs   k1=%.2fmm  k2=%.2fmm\n",
-                       tr->f[i].us / 1e6, (double)tr->f[i].mm[0],
+                       at / 1e6, (double)tr->f[i].mm[0],
                        (double)tr->f[i].mm[1]);
         }
     }

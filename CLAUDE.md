@@ -78,6 +78,11 @@ PAIR's travel per report, for replaying a session offline. It stays two
 keys wide whatever the pool's size — the header is `us,k1_mm,k2_mm` and
 every recorded trace under `tests/` is in that format, so widening it would
 invalidate the corpus to record keys that cannot arm the latch anyway.
+The `#` header anchors the trace in time: `t0_monotonic_ns` and
+`t0_realtime_ns` are read back to back just before it is written, and `us`
+counts from the monotonic one. So the first `us` is small but not 0, and the
+corpus traces simply have no anchor. Anything that reports a time within a
+trace should measure it from the first report, as `replay` does.
 `tools/replay.c` consumes it — built as part of `all` (see below), and NOT
 installed. It `#include`s `doubletapd.c` and stubs only the uinput writes, so
 it exercises the daemon's real state machine rather than a copy that could
