@@ -2502,8 +2502,16 @@ static void analog_dev_close(analog_dev_t *ad) {
  * lined up with anything else on the machine: monotonic against PipeWire's
  * graph clock and our own evdev stamps, realtime against logs that print
  * wall time. The two reads are back to back, so the pair agrees to a few
- * microseconds. Readers that predate the anchors skip them as comments. */
-static int analog_trace(const oid_config_t *cfg, const char *input_dir) {
+ * microseconds. Readers that predate the anchors skip them as comments.
+ *
+ * The header also records every threshold the analog front-end reads, so
+ * `replay` can run a trace under the settings it was PLAYED under rather
+ * than whatever the config says by the time someone replays it. Without
+ * that, a trace is only meaningful alongside a copy of the config it was
+ * recorded with. The keys are spelled as their config paths, and release_mm
+ * is left out because it is derived from actuation_mm, not configured. */
+static int analog_trace(const oid_config_t *cfg, const char *config_path,
+                        const char *input_dir) {
     analog_dev_t *ad = analog_dev_open(cfg, input_dir);
     if (!ad)
         return EXIT_FAILURE;
@@ -2524,6 +2532,20 @@ static int analog_trace(const oid_config_t *cfg, const char *input_dir) {
            (long long)t0.tv_sec * 1000000000LL + t0.tv_nsec);
     printf("# t0_realtime_ns=%lld\n",
            (long long)t0_real.tv_sec * 1000000000LL + t0_real.tv_nsec);
+    /* Absolute, so a trace recorded with `-c config.yaml` still says which
+     * file it came from once it has left the directory it was taken in. */
+    char *abs = realpath(config_path, NULL);
+    printf("# config_path=%s\n", abs ? abs : config_path);
+    free(abs);
+    /* %g, not a fixed precision: any value a person typed into the config
+     * prints back exactly, so replay reads the same float the daemon used. */
+    const analog_config_t *a = &cfg->analog;
+    printf("# analog travel_mm=%g actuation_mm=%g rapid_trigger.enabled=%d "
+           "rapid_trigger.press_mm=%g rapid_trigger.release_mm=%g "
+           "rapid_trigger.bottom_out_mm=%g\n",
+           (double)a->travel_mm, (double)a->actuation_mm, a->rt_enabled,
+           (double)a->rt_press_mm, (double)a->rt_release_mm,
+           (double)a->bottom_out_mm);
     printf("us,k1_mm,k2_mm\n");
     fflush(stdout);
 
@@ -3715,7 +3737,7 @@ main(int argc, char **argv) {
         return EXIT_FAILURE;
 
     if (trace) {
-        int rc = analog_trace(&cfg, input_dir);
+        int rc = analog_trace(&cfg, config_path, input_dir);
         config_free(&cfg);
         return rc;
     }

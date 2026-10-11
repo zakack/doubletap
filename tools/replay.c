@@ -21,6 +21,14 @@
  * from a map. An alt-tap trace that reports ZERO latches is the acceptance
  * test for the whole feature.
  *
+ * A trace from a current `-T` carries the thresholds it was played under,
+ * and with no -c those are what it replays with: the config file is not
+ * read at all, so the trace means the same thing on any machine and after
+ * any later retune. -c replays it under that file instead, which is how
+ * new thresholds get tried against an old session. Traces that predate the
+ * recorded thresholds (the tests/ corpus) read the config as they always
+ * did.
+ *
  *   build:  cmake --build build --target replay
  *   usage:  ./build/replay [-c CONFIG] TRACE.csv
  */
@@ -47,7 +55,45 @@ typedef struct {
     frame_t *f;
     size_t   n, cap;
     float    travel_mm;   /* from the trace header, 0 if absent */
+    /* The thresholds the trace was played under, from its `# analog` line.
+     * Only trusted when every one of them was there: a partial set would
+     * mix recorded values with config_init's defaults. */
+    analog_config_t rec;
+    int      rec_seen;    /* bitmask of REC_* keys found */
+    char     rec_path[4096];
 } trace_t;
+
+static const struct { const char *key; size_t off; int is_int; } rec_keys[] = {
+    { "travel_mm",                   offsetof(analog_config_t, travel_mm),     0 },
+    { "actuation_mm",                offsetof(analog_config_t, actuation_mm),  0 },
+    { "rapid_trigger.enabled",       offsetof(analog_config_t, rt_enabled),    1 },
+    { "rapid_trigger.press_mm",      offsetof(analog_config_t, rt_press_mm),   0 },
+    { "rapid_trigger.release_mm",    offsetof(analog_config_t, rt_release_mm), 0 },
+    { "rapid_trigger.bottom_out_mm", offsetof(analog_config_t, bottom_out_mm), 0 },
+};
+#define N_REC_KEYS (sizeof(rec_keys) / sizeof(rec_keys[0]))
+#define REC_ALL    ((1 << N_REC_KEYS) - 1)
+
+/* `# analog k=v k=v ...`. Unknown keys are skipped, so a later -T can
+ * record more without breaking this reader. */
+static void trace_parse_analog(char *line, trace_t *tr) {
+    char *save = NULL;
+    for (char *tok = strtok_r(line, " \t\r\n", &save); tok;
+         tok = strtok_r(NULL, " \t\r\n", &save)) {
+        char *eq = strchr(tok, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        for (size_t i = 0; i < N_REC_KEYS; i++) {
+            if (strcmp(tok, rec_keys[i].key)) continue;
+            char *field = (char *)&tr->rec + rec_keys[i].off;
+            if (rec_keys[i].is_int)
+                *(int *)field = atoi(eq + 1);
+            else
+                *(float *)field = strtof(eq + 1, NULL);
+            tr->rec_seen |= 1 << i;
+        }
+    }
+}
 
 static int trace_load(const char *path, trace_t *tr) {
     FILE *fp = strcmp(path, "-") ? fopen(path, "r") : stdin;
@@ -61,6 +107,12 @@ static int trace_load(const char *path, trace_t *tr) {
     while (fgets(line, sizeof(line), fp)) {
         if (line[0] == '#') {
             sscanf(line, "# travel_mm=%f", &tr->travel_mm);
+            if (!strncmp(line, "# analog ", 9))
+                trace_parse_analog(line + 9, tr);
+            else if (!strncmp(line, "# config_path=", 14)) {
+                snprintf(tr->rec_path, sizeof(tr->rec_path), "%s", line + 14);
+                tr->rec_path[strcspn(tr->rec_path, "\r\n")] = '\0';
+            }
             continue;
         }
         long long us;
@@ -416,16 +468,53 @@ int main(int argc, char **argv) {
     if (trace_load(argv[optind], &tr) != 0)
         return EXIT_FAILURE;
 
-    if (!config_path)
-        config_path = default_config_path();
     oid_config_t cfg;
     config_init(&cfg);
-    if (load_config(config_path, &cfg) != 0)
-        return EXIT_FAILURE;
-    if (tr.travel_mm > 0.0f && tr.travel_mm != cfg.analog.travel_mm)
-        fprintf(stderr, "replay: note: trace was recorded with travel_mm "
-                        "%.3f, config says %.3f\n",
-                (double)tr.travel_mm, (double)cfg.analog.travel_mm);
+    int recorded = tr.rec_seen == REC_ALL;
+    if (tr.rec_seen && !recorded)
+        fprintf(stderr, "replay: note: the trace records only some of its "
+                        "thresholds; ignoring them and reading the config\n");
+
+    if (recorded && !config_path) {
+        /* Everything replay_run reads is in the recorded set; the pool and
+         * latch are fixed by analog_dev_stub, whatever a config says. */
+        for (size_t i = 0; i < N_REC_KEYS; i++)
+            memcpy((char *)&cfg.analog + rec_keys[i].off,
+                   (char *)&tr.rec + rec_keys[i].off,
+                   rec_keys[i].is_int ? sizeof(int) : sizeof(float));
+        analog_config_resolve(&cfg.analog);
+        fprintf(stderr, "replay: using the thresholds recorded in the trace "
+                        "(from %s); -c CONFIG to replay under another\n",
+                tr.rec_path[0] ? tr.rec_path : "an unnamed config");
+    } else {
+        if (!config_path)
+            config_path = default_config_path();
+        if (load_config(config_path, &cfg) != 0)
+            return EXIT_FAILURE;
+        if (recorded) {
+            /* -c over a trace that knows better: allowed, that is what -c
+             * is for, but say what differs so the result is not mistaken
+             * for how the session played. */
+            for (size_t i = 0; i < N_REC_KEYS; i++) {
+                const char *r = (char *)&tr.rec     + rec_keys[i].off;
+                const char *c = (char *)&cfg.analog + rec_keys[i].off;
+                if (rec_keys[i].is_int
+                        ? *(const int *)r != *(const int *)c
+                        : *(const float *)r != *(const float *)c)
+                    fprintf(stderr, "replay: note: %s was %g when recorded, "
+                                    "%s says %g\n", rec_keys[i].key,
+                            rec_keys[i].is_int ? *(const int *)r
+                                               : (double)*(const float *)r,
+                            config_path,
+                            rec_keys[i].is_int ? *(const int *)c
+                                               : (double)*(const float *)c);
+            }
+        } else if (tr.travel_mm > 0.0f &&
+                   tr.travel_mm != cfg.analog.travel_mm)
+            fprintf(stderr, "replay: note: trace was recorded with travel_mm "
+                            "%.3f, config says %.3f\n",
+                    (double)tr.travel_mm, (double)cfg.analog.travel_mm);
+    }
 
     double secs = (tr.f[tr.n - 1].us - tr.f[0].us) / 1e6;
     printf("%zu reports over %.1fs (%.0f Hz)\n",
@@ -434,7 +523,9 @@ int main(int argc, char **argv) {
     report_gaps(&tr, &cfg);
 
     run_t r;
-    printf("\nwith the config as it stands:\n");
+    printf(recorded && !config_path
+           ? "\nwith the thresholds it was played under:\n"
+           : "\nwith the config as it stands:\n");
     replay_run(&tr, &cfg, &r);
     /* `presses` is what a reader of the virtual device receives; `dropped`
      * is the daemon's unconditional up/down writes that the kernel swallows

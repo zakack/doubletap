@@ -328,6 +328,14 @@ times `deep` armed, how many virtual presses were emitted, a histogram of
 how deep the keypresses actually went, and a sweep of latches against
 `bottom_out_mm` so you can see how the backplate's width changes it.
 
+The trace's header records the analog thresholds it was played under, along
+with the path of the config they came from, so `replay` with no `-c` runs it
+under those settings without reading your config at all. A trace means the
+same thing after you retune, and on someone else's machine. To try other
+thresholds on an old session, pass `-c CONFIG`: the file wins, and `replay`
+notes every setting that differs from the recording. Traces recorded before
+the thresholds were in the header still read the config as they always did.
+
 **A trace of your own alt-tapping is the acceptance test.** Record one and
 check that it reports *zero* latches:
 

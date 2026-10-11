@@ -83,6 +83,15 @@ The `#` header anchors the trace in time: `t0_monotonic_ns` and
 counts from the monotonic one. So the first `us` is small but not 0, and the
 corpus traces simply have no anchor. Anything that reports a time within a
 trace should measure it from the first report, as `replay` does.
+The header also carries `config_path` and a `# analog k=v ...` line of
+every threshold the front-end reads, spelled as config paths. With no `-c`
+and a COMPLETE set, `replay` builds its config from `config_init` plus those
+values and never opens a config file; `-c` overrides them and notes the
+differences. A partial set is ignored rather than mixed with defaults. If
+the analog front-end starts reading a new config field, add it to both
+`analog_trace` and `rec_keys` in `tools/replay.c`, or recorded traces will
+quietly replay it at its default. The corpus has no `# analog` line, so it
+still reads the config exactly as before.
 `tools/replay.c` consumes it — built as part of `all` (see below), and NOT
 installed. It `#include`s `doubletapd.c` and stubs only the uinput writes, so
 it exercises the daemon's real state machine rather than a copy that could
