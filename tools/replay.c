@@ -29,8 +29,13 @@
  * recorded thresholds (the tests/ corpus) read the config as they always
  * did.
  *
+ * -e FILE also writes the session as the virtual device saw it: every key
+ * transition a reader of the uinput node would have received, and every
+ * time the `deep` latch armed or disarmed, one per line. `-e -` puts that on
+ * stdout and moves the human report to stderr.
+ *
  *   build:  cmake --build build --target replay
- *   usage:  ./build/replay [-c CONFIG] TRACE.csv
+ *   usage:  ./build/replay [-c CONFIG] [-e EVENTS.csv] TRACE.csv
  */
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
@@ -61,6 +66,8 @@ typedef struct {
     analog_config_t rec;
     int      rec_seen;    /* bitmask of REC_* keys found */
     char     rec_path[4096];
+    /* The `-T` header's clock anchors; 0 when absent, as in the corpus. */
+    long long t0_mono_ns, t0_real_ns;
 } trace_t;
 
 static const struct { const char *key; size_t off; int is_int; } rec_keys[] = {
@@ -107,6 +114,8 @@ static int trace_load(const char *path, trace_t *tr) {
     while (fgets(line, sizeof(line), fp)) {
         if (line[0] == '#') {
             sscanf(line, "# travel_mm=%f", &tr->travel_mm);
+            sscanf(line, "# t0_monotonic_ns=%lld", &tr->t0_mono_ns);
+            sscanf(line, "# t0_realtime_ns=%lld", &tr->t0_real_ns);
             if (!strncmp(line, "# analog ", 9))
                 trace_parse_analog(line + 9, tr);
             else if (!strncmp(line, "# config_path=", 14)) {
@@ -154,6 +163,27 @@ static run_t      g_run;
 static int        g_verbose;
 static long long  g_now_us;
 
+/* -e: the event stream. NULL when not asked for, and during the sweep, whose
+ * passes are hypotheticals rather than the session. */
+static FILE               *g_events;
+static const analog_dev_t *g_ad;          /* the pass in progress */
+static int                 g_logged_deep;
+static long long           g_origin_us;   /* the trace's first report */
+
+/* Log the latch if it moved since the last row. analog_deep_set flips
+ * `deep` BEFORE it writes the reconciling releases, so calling this ahead of
+ * each write puts the latch row first - the releases are its consequence and
+ * read that way. It runs again after every report for a flip that wrote
+ * nothing. Hooked here rather than in doubletapd.c: the field is the truth,
+ * and the daemon needs no knowledge of this tool. */
+static void events_deep_sync(void) {
+    if (!g_events || !g_ad || g_ad->deep == g_logged_deep)
+        return;
+    g_logged_deep = g_ad->deep;
+    fprintf(g_events, "%lld,deep,%d\n", g_now_us - g_origin_us,
+            g_logged_deep);
+}
+
 /* The virtual keyboard as the REST OF THE SYSTEM sees it, not as the daemon
  * writes it.
  *
@@ -177,6 +207,7 @@ static unsigned char g_vkey[KEY_MAX + 1];
 static void replay_emit(unsigned type, unsigned code, int value) {
     if (type != EV_KEY || code > KEY_MAX)
         return;
+    events_deep_sync();
     if (value == 2)                     /* autorepeat bypasses the state test */
         return;
     if (!!g_vkey[code] == !!value) {    /* no change: the kernel drops it */
@@ -186,6 +217,16 @@ static void replay_emit(unsigned type, unsigned code, int value) {
     g_vkey[code] = value ? 1 : 0;
     if (value)
         g_run.presses++;
+    /* After the filter, so the stream is what the device delivered. */
+    if (g_events) {
+        const char *nm = libevdev_event_code_get_name(EV_KEY, code);
+        if (nm)
+            fprintf(g_events, "%lld,%s,%d\n", g_now_us - g_origin_us, nm,
+                    value ? 1 : 0);
+        else
+            fprintf(g_events, "%lld,%u,%d\n", g_now_us - g_origin_us, code,
+                    value ? 1 : 0);
+    }
 }
 
 static void replay_run(const trace_t *tr, const oid_config_t *cfg,
@@ -196,6 +237,9 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
     memset(g_vkey, 0, sizeof(g_vkey));   /* the sweep re-runs this pass */
     g_run.first_engage_us = -1;
     g_log_quiet = 1;                     /* -v lists the latches instead */
+    g_ad          = &ad;
+    g_logged_deep = 0;
+    g_origin_us   = tr->f[0].us;
 
     for (size_t i = 0; i < tr->n; i++) {
         int   was = ad.deep;
@@ -208,6 +252,7 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
         /* The trace's own timestamp, so the placement path sees real
          * inter-report spacing rather than a synthetic constant. */
         analog_report(&ad, cfg, depth, (uint64_t)tr->f[i].us * 1000ull);
+        events_deep_sync();
 
         if (!was && ad.deep) {
             /* From the first report, not from `us` = 0: an anchored trace
@@ -223,6 +268,7 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
         }
     }
     g_log_quiet = 0;
+    g_ad = NULL;
     *out = g_run;
 }
 
@@ -442,25 +488,29 @@ static void report_style(const trace_t *tr, const oid_config_t *cfg) {
 
 int main(int argc, char **argv) {
     const char *config_path = NULL;
+    const char *events_path = NULL;
     int         sweep       = 1;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:vq")) != -1) {
+    while ((opt = getopt(argc, argv, "c:e:vq")) != -1) {
         switch (opt) {
             case 'c': config_path = optarg; break;
+            case 'e': events_path = optarg; break;
             case 'v': g_verbose = 1;        break;
             case 'q': sweep = 0;            break;
             default:
             fprintf(stderr,
-                    "usage: %s [-c CONFIG] [-v] [-q] TRACE.csv\n"
+                    "usage: %s [-c CONFIG] [-e EVENTS] [-v] [-q] TRACE.csv\n"
+                    "  -e  write virtual key transitions and deep latch\n"
+                    "      changes as CSV to EVENTS (- for stdout)\n"
                     "  -v  list every latch\n"
                     "  -q  skip the bottom_out_mm sweep\n", argv[0]);
             return EXIT_FAILURE;
         }
     }
     if (optind >= argc) {
-        fprintf(stderr, "usage: %s [-c CONFIG] [-v] [-q] TRACE.csv\n",
-                argv[0]);
+        fprintf(stderr, "usage: %s [-c CONFIG] [-e EVENTS] [-v] [-q] "
+                        "TRACE.csv\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -516,6 +566,40 @@ int main(int argc, char **argv) {
                     (double)tr.travel_mm, (double)cfg.analog.travel_mm);
     }
 
+    /* `-e -` takes stdout for the events and sends the report to stderr,
+     * so the stream can be piped without the summary interleaved in it. */
+    if (events_path) {
+        if (!strcmp(events_path, "-")) {
+            int fd = dup(STDOUT_FILENO);
+            g_events = fd >= 0 ? fdopen(fd, "w") : NULL;
+            if (g_events) {
+                fflush(stdout);
+                dup2(STDERR_FILENO, STDOUT_FILENO);
+            }
+        } else {
+            g_events = fopen(events_path, "w");
+        }
+        if (!g_events) {
+            fprintf(stderr, "replay: %s: %s\n", events_path, strerror(errno));
+            return EXIT_FAILURE;
+        }
+        /* Times count from the trace's first report, like every other time
+         * replay prints. The origins say where that report sits on each
+         * clock, so the stream can be lined up with a game's own log; they
+         * are only known for an anchored trace. */
+        fprintf(g_events, "# doubletap replay events v1\n");
+        fprintf(g_events, "# trace=%s\n", argv[optind]);
+        fprintf(g_events, "# thresholds=%s\n",
+                recorded && !config_path ? "recorded" : config_path);
+        if (tr.t0_mono_ns)
+            fprintf(g_events, "# origin_monotonic_ns=%lld\n",
+                    tr.t0_mono_ns + tr.f[0].us * 1000);
+        if (tr.t0_real_ns)
+            fprintf(g_events, "# origin_realtime_ns=%lld\n",
+                    tr.t0_real_ns + tr.f[0].us * 1000);
+        fprintf(g_events, "us,event,value\n");
+    }
+
     double secs = (tr.f[tr.n - 1].us - tr.f[0].us) / 1e6;
     printf("%zu reports over %.1fs (%.0f Hz)\n",
            tr.n, secs, secs > 0 ? tr.n / secs : 0.0);
@@ -527,6 +611,11 @@ int main(int argc, char **argv) {
            ? "\nwith the thresholds it was played under:\n"
            : "\nwith the config as it stands:\n");
     replay_run(&tr, &cfg, &r);
+    if (g_events) {
+        if (fclose(g_events) != 0)
+            fprintf(stderr, "replay: %s: %s\n", events_path, strerror(errno));
+        g_events = NULL;                /* the sweep is not the session */
+    }
     /* `presses` is what a reader of the virtual device receives; `dropped`
      * is the daemon's unconditional up/down writes that the kernel swallows
      * because the key was already in that state. Both are shown so a count
