@@ -9,7 +9,6 @@ Type=simple
 ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/doubletapd
 Restart=on-failure
 RestartSec=2s
-Environment=PIPEWIRE_LATENCY=16/48000
 
 # This is a user unit: enable it with
 #   systemctl --user enable --now doubletap
