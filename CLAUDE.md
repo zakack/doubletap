@@ -122,6 +122,16 @@ prints M, so the filename is the expected result. The `tap_*` traces must
 report ZERO latches; the `toggle_*` traces must latch and must emit MORE
 virtual presses than physical.
 
+`replay -e FILE` (`-` for stdout, which moves the report to stderr) also
+writes the session as CSV `us,event,value`: every virtual key transition
+AFTER the kernel's no-change filter, so it is what a reader of the device
+received, plus `deep,1`/`deep,0` rows for the latch. It is hooked in
+`replay_emit` and needs nothing from `doubletapd.c` — `analog_deep_set` flips
+`deep` before writing its reconciling releases, so checking the field ahead
+of each write puts the latch row first. Times count from the first report;
+for an anchored trace the header's `origin_*_ns` place that report on each
+clock. The sweep runs with the stream closed.
+
 `tools/mixtest.c` is the third of these — assertions over the audio voice
 pool, the SPSC trigger ring and the summed output buffer, run with
 `./build/mixtest`. It needs no PipeWire and no stubs: `audio_mix` is the
