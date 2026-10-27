@@ -77,9 +77,14 @@ static const struct { const char *key; size_t off; int is_int; } rec_keys[] = {
     { "rapid_trigger.press_mm",      offsetof(analog_config_t, rt_press_mm),   0 },
     { "rapid_trigger.release_mm",    offsetof(analog_config_t, rt_release_mm), 0 },
     { "rapid_trigger.bottom_out_mm", offsetof(analog_config_t, bottom_out_mm), 0 },
+    /* Added after the `# analog` line was. Everything below REC_REQUIRED is
+     * OPTIONAL: a trace recorded before the field existed played under its
+     * default, so absence is a known value rather than a gap, and treating
+     * it as one would discard every older trace's recorded thresholds. */
+    { "latch_debounce_ms",           offsetof(analog_config_t, latch_debounce_ms), 0 },
 };
-#define N_REC_KEYS (sizeof(rec_keys) / sizeof(rec_keys[0]))
-#define REC_ALL    ((1 << N_REC_KEYS) - 1)
+#define N_REC_KEYS   (sizeof(rec_keys) / sizeof(rec_keys[0]))
+#define REC_REQUIRED ((1 << 6) - 1)
 
 /* `# analog k=v k=v ...`. Unknown keys are skipped, so a later -T can
  * record more without breaking this reader. */
@@ -520,7 +525,7 @@ int main(int argc, char **argv) {
 
     oid_config_t cfg;
     config_init(&cfg);
-    int recorded = tr.rec_seen == REC_ALL;
+    int recorded = (tr.rec_seen & REC_REQUIRED) == REC_REQUIRED;
     if (tr.rec_seen && !recorded)
         fprintf(stderr, "replay: note: the trace records only some of its "
                         "thresholds; ignoring them and reading the config\n");

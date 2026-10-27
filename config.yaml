@@ -197,6 +197,15 @@ audio:
 #   travel_mm: 4.0        # full key travel (Wooting 60HE+ is 4.0)
 #   actuation_mm: 1.0     # press threshold while TAPPING. Not used while
 #                         # riding, where the backplate is the switch.
+#   latch_debounce_ms: 0  # how long BOTH keys must stay on the backplate
+#                         # before the latch arms. 0 arms on the first
+#                         # report with both planted. Raise it if hard
+#                         # alt-taps that both graze the floor arm it by
+#                         # accident; a real plant lasts far longer than
+#                         # that overlap. Until it runs out the keys stay
+#                         # on the plain remap, so the cost is only that
+#                         # the toggle engages later. Disarming is never
+#                         # debounced.
 #   rapid_trigger:
 #     enabled: true
 #     press_mm: 0.3       # downward reversal that re-presses  } tapping

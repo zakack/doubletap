@@ -839,6 +839,10 @@ typedef struct {
     float  bottom_out_mm; /* within this of full travel == bottomed out:
                            * presses regardless of rt_press_mm, and, for
                            * both latch keys at once, arms `deep` */
+    float  latch_debounce_ms; /* how long BOTH latch keys must stay on the
+                               * backplate before `deep` arms. 0 == the
+                               * first report with both planted arms it.
+                               * Disarming is never debounced. */
     /* HID usage overrides, parallel to keys.pool; -1 == derive from the
      * keymap. 'analog.hid_k1'/'hid_k2' are the legacy two-key spelling and
      * write entries 0 and 1. */
@@ -1367,6 +1371,8 @@ static int load_config(const char *path, oid_config_t *c) {
         static const struct { const char *key; size_t off; } mm[] = {
             { "travel_mm",     offsetof(analog_config_t, travel_mm)     },
             { "actuation_mm",  offsetof(analog_config_t, actuation_mm)  },
+            { "latch_debounce_ms",
+              offsetof(analog_config_t, latch_debounce_ms) },
         };
         for (size_t i = 0; i < sizeof(mm) / sizeof(mm[0]); i++) {
             yaml_node_t *v = map_get(&doc, an, mm[i].key);
@@ -2364,6 +2370,11 @@ typedef struct {
                                  * because arming can move a key between
                                  * slots; analog_deep_set resolves it to a
                                  * slot after that. */
+    int            plant_pending; /* both latch keys are on the backplate
+                                   * and the debounce is running */
+    uint64_t       plant_ns;    /* report time that started the debounce.
+                                 * Not a sentinel: regimetest passes 0 on
+                                 * every report, so `plant_pending` is. */
 } analog_dev_t;
 
 static analog_dev_t *analog_dev_open(const oid_config_t *cfg,
@@ -2440,10 +2451,12 @@ static analog_dev_t *analog_dev_open(const oid_config_t *cfg,
              ad->path, ad->fmt == ANALOG_FMT_V2 ? "v2" : "v1",
              ad->vid, ad->pid, keydesc);
     LOG_INFO("Analog thresholds: actuation %.2fmm, release %.2fmm "
-             "(derived), backplate at %.2fmm, rapid trigger %s",
+             "(derived), backplate at %.2fmm, rapid trigger %s, latch "
+             "debounce %.1fms",
              (double)cfg->analog.actuation_mm, (double)cfg->analog.release_mm,
              (double)(cfg->analog.travel_mm - cfg->analog.bottom_out_mm),
-             cfg->analog.rt_enabled ? "on" : "off");
+             cfg->analog.rt_enabled ? "on" : "off",
+             (double)cfg->analog.latch_debounce_ms);
     LOG_INFO("SOCD engages while both keys are planted on the backplate "
              "(deep latch); while engaged the backplate is the switch and "
              "rapid trigger does not run; disengages when BOTH keys leave "
@@ -2542,10 +2555,10 @@ static int analog_trace(const oid_config_t *cfg, const char *config_path,
     const analog_config_t *a = &cfg->analog;
     printf("# analog travel_mm=%g actuation_mm=%g rapid_trigger.enabled=%d "
            "rapid_trigger.press_mm=%g rapid_trigger.release_mm=%g "
-           "rapid_trigger.bottom_out_mm=%g\n",
+           "rapid_trigger.bottom_out_mm=%g latch_debounce_ms=%g\n",
            (double)a->travel_mm, (double)a->actuation_mm, a->rt_enabled,
            (double)a->rt_press_mm, (double)a->rt_release_mm,
-           (double)a->bottom_out_mm);
+           (double)a->bottom_out_mm, (double)a->latch_debounce_ms);
     printf("us,k1_mm,k2_mm\n");
     fflush(stdout);
 
@@ -3195,7 +3208,7 @@ static void analog_deep_set(analog_dev_t *ad, int on,
  * plain release, over virtual keys the reconciliation has already put where
  * SOCD_OFF expects them. */
 static void analog_deep_update(analog_dev_t *ad, const oid_config_t *cfg,
-                               const float *depth) {
+                               const float *depth, uint64_t t_ns) {
     const analog_config_t *a = &cfg->analog;
 
     float floor_mm = a->travel_mm - a->bottom_out_mm;
@@ -3207,6 +3220,7 @@ static void analog_deep_update(analog_dev_t *ad, const oid_config_t *cfg,
     float d0 = depth[ad->latch[0]], d1 = depth[ad->latch[1]];
 
     if (ad->deep) {
+        ad->plant_pending = 0;
         /* BOTH fingers off the floor ends it. One key leaving is a stroke,
          * not an exit - which is the whole point, and why the earlier rule
          * (either key back past actuation_mm) was wrong. In a burst a finger
@@ -3239,12 +3253,26 @@ static void analog_deep_update(analog_dev_t *ad, const oid_config_t *cfg,
      * proprioception, and "plant both keys to start rocking" is an
      * instruction a player can actually follow.
      *
-     * Hysteresis is enormous by construction - on the defaults this arms at
-     * 3.80mm and disarms at 1.00mm - so there is no chatter and no need for
-     * a debounce counter. "One consecutive sample" IS the instantaneous
-     * test; if a longer confirmation is ever wanted it wraps this test and
-     * nothing else moves. */
-    if (d0 >= floor_mm && d1 >= floor_mm) {
+     * Hysteresis is enormous by construction, so there is no chatter to
+     * debounce in the usual sense. What `latch_debounce_ms` filters is a
+     * different thing: two hard taps that BOTH happen to touch the floor in
+     * the same report, which is an instant, against a rock, which plants
+     * and stays. It wraps this test and nothing else - the depths are still
+     * judged on the current sample alone, nothing is compared across keys,
+     * and while it runs the pair stays on the plain remap, so the cost of a
+     * debounce is that the toggle engages that much later, never a phantom
+     * note. Either key leaving the floor restarts it. */
+    if (d0 < floor_mm || d1 < floor_mm) {
+        ad->plant_pending = 0;
+        return;
+    }
+    if (!ad->plant_pending) {
+        ad->plant_pending = 1;
+        ad->plant_ns      = t_ns;
+    }
+    if (a->latch_debounce_ms <= 0.0f ||
+        (double)(t_ns - ad->plant_ns) >= (double)a->latch_debounce_ms * 1e6) {
+        ad->plant_pending = 0;
         /* Logged because arming is otherwise INVISIBLE: it is release-only
          * by construction, it never clicks, and the first dip out of it
          * reverts through two writes the kernel drops. With no trace of it
@@ -3253,8 +3281,9 @@ static void analog_deep_update(analog_dev_t *ad, const oid_config_t *cfg,
          * are asking when the daemon seems stuck on the plain remap.
          * Transitions are once per rock, not per report. */
         LOG_INFO("Deep latch ARMED: k1 %.2fmm, k2 %.2fmm both at or past "
-                 "the backplate (%.2fmm) - SOCD toggle engaged",
-                 (double)d0, (double)d1, (double)floor_mm);
+                 "the backplate (%.2fmm) for %.1fms - SOCD toggle engaged",
+                 (double)d0, (double)d1, (double)floor_mm,
+                 (double)(t_ns - ad->plant_ns) / 1e6);
         analog_deep_set(ad, 1, cfg);
     }
 }
@@ -3336,10 +3365,6 @@ static int analog_socd_edge(analog_dev_t *ad, int idx, int value,
  * to drift from the daemon while still passing its own assertions. */
 static void analog_report(analog_dev_t *ad, const oid_config_t *cfg,
                           const float *depth, uint64_t t_ns) {
-    /* Referenced only through ANALOG_CLICK, which tools/regimetest.c
-     * redefines to something that ignores it. Harmless where it IS used. */
-    (void)t_ns;
-
     /* Feed every key before judging any: engagement and lapse read the
      * deep/live state of the latch pair, which is only complete once both
      * have been fed. The latch is then resolved BEFORE this sample's edges
@@ -3367,7 +3392,7 @@ static void analog_report(analog_dev_t *ad, const oid_config_t *cfg,
                                 was_deep && is_latch, edges[k]);
     }
 
-    analog_deep_update(ad, cfg, depth);
+    analog_deep_update(ad, cfg, depth, t_ns);
 
     /* Re-anchor the keys that were silenced, now that they are fed
      * again. Their rt_extreme is as stale as the rock was long, and

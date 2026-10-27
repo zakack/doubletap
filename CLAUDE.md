@@ -90,7 +90,11 @@ values and never opens a config file; `-c` overrides them and notes the
 differences. A partial set is ignored rather than mixed with defaults. If
 the analog front-end starts reading a new config field, add it to both
 `analog_trace` and `rec_keys` in `tools/replay.c`, or recorded traces will
-quietly replay it at its default. The corpus has no `# analog` line, so it
+quietly replay it at its default. A field added AFTER the `# analog` line
+existed goes past `REC_REQUIRED` and is optional: an older trace lacking it
+played under its default, so absence is a known value, and requiring it
+would make every such trace a partial set and discard its thresholds
+(`latch_debounce_ms` is the first). The corpus has no `# analog` line, so it
 still reads the config exactly as before.
 `tools/replay.c` consumes it — built as part of `all` (see below), and NOT
 installed. It `#include`s `doubletapd.c` and stubs only the uinput writes, so
@@ -424,6 +428,18 @@ down in reverse order.
   only threshold in force while riding. The config check refuses a zero
   value and warns above 10% of travel, where a firm tap starts to reach it
   and alt-tapping could arm the latch.
+- `analog.latch_debounce_ms` WRAPS THE ARM TEST AND NOTHING ELSE. Both
+  latch keys must stay on the backplate for that long, judged on report
+  timestamps (`t_ns`, threaded into `analog_deep_update`), before `deep`
+  arms; either key leaving the floor restarts the window. It filters two
+  hard taps that both graze the floor in one report, not a resting finger,
+  and it compares no depths across keys. While it runs the pair is still on
+  the plain remap, so a long value only delays the toggle; nothing presses
+  or clicks on a late arm. Disarming is never debounced. The pending state
+  is a flag (`plant_pending`), not `plant_ns == 0`, because `regimetest`
+  passes `t_ns = 0` on every report. Default 0 is the old instantaneous
+  test, which is what keeps every other case and the corpus unchanged;
+  `regimetest` case S covers it.
 - The config check still requires `actuation_mm` to sit above the
   backplate, though no longer because actuation disarms the latch: an
   actuation line at or past the floor means a key could reach the backplate
