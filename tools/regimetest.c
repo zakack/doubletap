@@ -118,6 +118,15 @@ static void sample(float d0, float d1) {
     analog_report(&ad, &cfg, d, 0);
 }
 
+/* One analog report at a given time, for the latch debounce (case S).
+ * Every other case passes 0 and runs with the debounce off, which is what
+ * keeps them the instantaneous test they were written against. */
+static void sample_at(double ms, float d0, float d1) {
+    float d[POOL_MAX] = { d0, d1 };
+    reset_log();
+    analog_report(&ad, &cfg, d, (uint64_t)(ms * 1e6));
+}
+
 /* ---------------------------------------------------------------------- *
  * analog_drain, driven by real encoded reports over a pipe.
  *
@@ -732,6 +741,46 @@ int main(void) {
     dtap(0); expect_log("  Z again ALTERNATES", "v2+ v2-");
     dtap(0); expect_log("  and back", "v1+ v1-");
     dtap(2); expect_log("  C follows the same alternation", "v2+ v2-");
+
+    puts("S. latch_debounce_ms: both must STAY planted before it arms");
+    /* Two hard taps that both graze the floor in one report are an
+     * instant; a rock plants and stays. Until the debounce runs out the
+     * pair is on the plain remap, so the only cost is that the toggle
+     * engages later - nothing here may press or click on arming. */
+    cfg.analog.latch_debounce_ms = 10.0f;
+    fresh();
+    sample_at(0.0, 3.85f, 0.00f);
+    expect_log("k1 planted", "v1+");
+    sample_at(1.0, 3.85f, 3.85f);
+    expect_log("k2 slams onto the floor", "v2+");
+    expect_int("  not armed on first contact", ad.deep, 0);
+    sample_at(2.0, 0.00f, 0.00f);
+    expect_log("both leave: a hard double tap", "v1- v2-");
+    expect_int("  never armed", ad.deep, 0);
+
+    fresh();
+    sample_at(10.0, 3.85f, 0.00f);
+    expect_log("k1 planted", "v1+");
+    sample_at(11.0, 3.85f, 3.85f);
+    expect_log("k2 planted", "v2+");
+    sample_at(16.0, 3.85f, 3.85f);
+    expect_int("  5ms in: still pending", ad.deep, 0);
+    sample_at(17.0, 3.85f, 3.00f);
+    expect_log("k2 leaves the floor mid-window", "v2-");
+    sample_at(19.0, 3.85f, 3.85f);
+    expect_log("k2 back down: window restarts", "v2+");
+    sample_at(28.0, 3.85f, 3.85f);
+    expect_int("  9ms after the restart: still pending", ad.deep, 0);
+    sample_at(29.0, 3.85f, 3.85f);
+    expect_log("10ms planted: arms, v1 steps aside", "v1-");
+    expect_clicks("  arming is still silent", "");
+    expect_int("  armed", ad.deep, 1);
+    sample_at(30.0, 3.85f, 3.60f);
+    expect_log("riding works as before", "v2- v1+");
+    sample_at(31.0, 0.00f, 0.00f);
+    expect_log("both leave: disarm is NOT debounced", "v1-");
+    expect_int("  disarmed", ad.deep, 0);
+    cfg.analog.latch_debounce_ms = 0.0f;
 
     printf("\n%s\n", fails ? "FAILURES ABOVE" : "all assertions passed");
     return fails ? 1 : 0;
