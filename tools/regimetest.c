@@ -20,6 +20,12 @@ static void test_emit(unsigned type, unsigned code, int value);
 static void note_voice(int voice);
 #define ANALOG_CLICK(voice) note_voice(voice)
 
+/* A scripted libevdev read queue, for drain_device (case T). Stubbed the
+ * same way the uinput writes are, so the daemon's own drain loop runs. */
+static int test_next_event(struct libevdev *dev, unsigned int flags,
+                           struct input_event *ev);
+#define libevdev_next_event(d, f, e) test_next_event((d), (f), (e))
+
 #define main doubletapd_main
 #include "doubletapd.c"
 #undef main
@@ -48,6 +54,15 @@ static unsigned vrepeats;
 
 static void test_emit(unsigned type, unsigned code, int value) {
     if (type != EV_KEY) return;                    /* ignore SYN */
+    /* Anything else is a mirrored non-pool key (process_event, case T).
+     * Logged by code so it can never be mistaken for v2. */
+    if (code != V1 && code != V2) {
+        if (value == 2) return;
+        size_t n = strlen(log_buf);
+        snprintf(log_buf + n, sizeof log_buf - n, "%sk%u%c",
+                 n ? " " : "", code, value ? '+' : '-');
+        return;
+    }
     int k = (code == V1) ? 0 : 1;
     /* Autorepeat does not change key state - the kernel passes it through to
      * userspace and leaves the key down. Counting it separately keeps it out
@@ -228,6 +243,70 @@ static void fresh4(void) {
     ad.n = 4;
     pool_init(&ad.pool, ad.n);
     cfg.n_pool = 4;
+}
+
+/* ---------------------------------------------------------------------- *
+ * drain_device across a SYN_DROPPED (case T).
+ *
+ * A model of libevdev_next_event's documented contract, not of the kernel:
+ * a NORMAL read returns the next queued event, or the SYN_DROPPED marker
+ * with LIBEVDEV_READ_STATUS_SYNC; SYNC reads then return the resync delta
+ * one event at a time, also with STATUS_SYNC, and -EAGAIN once it is done.
+ * A NORMAL read while a delta is pending discards it, which is what
+ * libevdev does to a caller that ignores the resync - and is how the old
+ * drain loop lost it.
+ * ---------------------------------------------------------------------- */
+#define Q_MAX 16
+typedef struct { int dropped; struct input_event ev; } q_item_t;
+static q_item_t           q[Q_MAX];
+static int                q_n, q_pos;
+static struct input_event q_delta[Q_MAX];
+static int                q_delta_n, q_delta_pos, q_in_sync;
+
+static void q_reset(void) { q_n = q_pos = q_delta_n = q_delta_pos = q_in_sync = 0; }
+
+static void q_ev(unsigned type, unsigned code, int value) {
+    q[q_n].dropped  = 0;
+    q[q_n].ev.type  = (uint16_t)type;
+    q[q_n].ev.code  = (uint16_t)code;
+    q[q_n].ev.value = value;
+    q_n++;
+}
+
+static void q_drop(void) { q[q_n].dropped = 1; q_n++; }
+
+static void q_delta_ev(unsigned type, unsigned code, int value) {
+    q_delta[q_delta_n].type  = (uint16_t)type;
+    q_delta[q_delta_n].code  = (uint16_t)code;
+    q_delta[q_delta_n].value = value;
+    q_delta_n++;
+}
+
+static int test_next_event(struct libevdev *dev, unsigned int flags,
+                           struct input_event *ev) {
+    (void)dev;
+    if (q_in_sync) {
+        if (flags & LIBEVDEV_READ_FLAG_SYNC) {
+            if (q_delta_pos < q_delta_n) {
+                *ev = q_delta[q_delta_pos++];
+                return LIBEVDEV_READ_STATUS_SYNC;
+            }
+            q_in_sync = 0;
+            return -EAGAIN;
+        }
+        q_in_sync = 0;               /* ignored: the delta is discarded */
+    }
+    if (q_pos >= q_n) return -EAGAIN;
+    q_item_t *it = &q[q_pos++];
+    if (it->dropped) {
+        memset(ev, 0, sizeof *ev);
+        ev->type  = EV_SYN;
+        ev->code  = SYN_DROPPED;
+        q_in_sync = 1;
+        return LIBEVDEV_READ_STATUS_SYNC;
+    }
+    *ev = it->ev;
+    return LIBEVDEV_READ_STATUS_SUCCESS;
 }
 
 
@@ -781,6 +860,46 @@ int main(void) {
     expect_log("both leave: disarm is NOT debounced", "v1-");
     expect_int("  disarmed", ad.deep, 0);
     cfg.analog.latch_debounce_ms = 0.0f;
+
+    puts("T. a SYN_DROPPED resync delta is processed, not thrown away");
+    /* The shape from the review: a mirrored key and a pool key are held,
+     * the daemon stalls long enough for the kernel buffer to overflow, and
+     * during the gap the mirrored key is released, the pool key is released
+     * and the other pool key is pressed. Only the delta knows any of that. */
+    {
+        enum { KA = 30 };                  /* KEY_A: not in the pool */
+        dfresh(2, SOCD_OFF);
+        input_dev_t in;
+        memset(&in, 0, sizeof in);
+        in.path    = "regimetest";
+        in.grabbed = 1;
+        pool_init(&in.pool, dcfg.n_pool);
+
+        q_reset();
+        reset_log();
+        q_ev(EV_KEY, KA, 1);
+        q_ev(EV_KEY, KZ, 1);
+        q_ev(EV_SYN, SYN_REPORT, 0);
+        expect_int("drain before the stall", drain_device(&in, &dcfg), 0);
+        expect_log("  held: KEY_A mirrored, KZ on v1", "k30+ v1+");
+
+        q_reset();
+        reset_log();
+        vpresses = 0;
+        q_drop();
+        q_delta_ev(EV_KEY, KA, 0);
+        q_delta_ev(EV_KEY, KZ, 0);
+        q_delta_ev(EV_KEY, KX, 1);
+        q_delta_ev(EV_SYN, SYN_REPORT, 0);
+        q_ev(EV_KEY, KX, 0);               /* queued after the resync */
+        q_ev(EV_SYN, SYN_REPORT, 0);
+        expect_int("drain across the drop", drain_device(&in, &dcfg), 0);
+        expect_log("  delta applied, then the queued release",
+                   "k30- v1- v2+ v2-");
+        expect_int("  the gap's press is a note", (int)vpresses, 1);
+        expect_int("  nothing left down", vstate[0] + vstate[1], 0);
+        expect_int("  every queued event read in one pass", q_pos, q_n);
+    }
 
     printf("\n%s\n", fails ? "FAILURES ABOVE" : "all assertions passed");
     return fails ? 1 : 0;
