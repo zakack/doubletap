@@ -2961,25 +2961,52 @@ static int process_event(input_dev_t *in, const struct input_event *ie,
 /* loop                                                                      */
 /* ------------------------------------------------------------------------- */
 
-/* drain everything libevdev has buffered, looping over SYNC drops
- * as needed. return 0 on normal EAGAIN, -1 on fatal error. */
+/* drain everything libevdev has buffered, resyncing across SYN_DROPPED.
+ * return 0 on normal EAGAIN, -1 on fatal error.
+ *
+ * LIBEVDEV_READ_STATUS_SYNC means two different things depending on the
+ * flag it was read with. Read in NORMAL mode it is the SYN_DROPPED marker
+ * itself: the kernel's buffer overflowed and everything in it is gone, so
+ * switch to SYNC mode. Read in SYNC mode it is one event of the resync
+ * delta - libevdev diffing its last known state against the device's real
+ * one - and that event is exactly as real as any other: a key that was
+ * released or pressed while the buffer was overflowing. It goes through
+ * process_event like everything else. Throwing the delta away (as this used
+ * to) leaves a released key down on the virtual keyboard until it is tapped
+ * again, and loses the note of a pool key pressed during the gap.
+ *
+ * -EAGAIN in SYNC mode only ends the delta; whatever was queued behind it
+ * is read in NORMAL mode in the same pass, and only a NORMAL-mode -EAGAIN
+ * ends the drain. */
 static int drain_device(input_dev_t *in, const oid_config_t *cfg) {
     unsigned int flag = LIBEVDEV_READ_FLAG_NORMAL;
     for (;;) {
         struct input_event ie;
         int rc = libevdev_next_event(in->dev, flag, &ie);
-        if (rc == -EAGAIN)
+        if (rc == -EAGAIN) {
+            if (flag == LIBEVDEV_READ_FLAG_SYNC) {
+                flag = LIBEVDEV_READ_FLAG_NORMAL;
+                continue;
+            }
             break;
-        if (rc == LIBEVDEV_READ_STATUS_SYNC) {
+        }
+        if (rc == LIBEVDEV_READ_STATUS_SYNC &&
+            flag == LIBEVDEV_READ_FLAG_NORMAL) {
+            LOG_WARN("%s: input events dropped (SYN_DROPPED); resyncing",
+                     in->path);
             flag = LIBEVDEV_READ_FLAG_SYNC;
             continue;
         }
-        if (rc != LIBEVDEV_READ_STATUS_SUCCESS) {
+        if (rc != LIBEVDEV_READ_STATUS_SUCCESS &&
+            rc != LIBEVDEV_READ_STATUS_SYNC) {
             LOG_WARN("libevdev_next_event(%s): %s",
                      in->path, strerror(-rc));
             return -1;
         }
-        flag = LIBEVDEV_READ_FLAG_NORMAL;
+        /* The marker itself is never forwarded, whichever mode it turns
+         * up in: it describes this reader's buffer, not the device. */
+        if (ie.type == EV_SYN && ie.code == SYN_DROPPED)
+            continue;
         /* Grab still deferred: the system receives these events directly
          * through the ungrabbed device, so mirroring or filtering them
          * would double them up - just let libevdev track the key state. */

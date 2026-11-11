@@ -285,8 +285,12 @@ sections (search for the `/* --- */` banner comments):
    hotplugged node is typically root-only until udev applies the
    input-group permissions, so the first open gets `EACCES` and the chmod
    retriggers the reconcile pass. Devices are drained with
-   `libevdev_next_event` (handling `LIBEVDEV_READ_STATUS_SYNC`
-   dropped-event resync) until `EAGAIN`. A device is dropped from the poll
+   `libevdev_next_event` until a NORMAL-mode `EAGAIN`. On `SYN_DROPPED`
+   it switches to `LIBEVDEV_READ_FLAG_SYNC` and feeds every event of the
+   resync delta through `process_event` like any other: the delta is the
+   only record of keys that changed while the buffer overflowed, and
+   dropping it strands released keys down on the virtual keyboard
+   (`regimetest` case T). A device is dropped from the poll
    set on error/HUP without killing the daemon — releasing its active
    virtual key first if one was held (`release_stuck`) — and the loop
    keeps running with zero devices, waiting for hotplug (it only aborts at
