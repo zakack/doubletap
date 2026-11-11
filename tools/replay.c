@@ -29,13 +29,22 @@
  * recorded thresholds (the tests/ corpus) read the config as they always
  * did.
  *
+ * The same goes for the one RULE that has changed under recorded traces: when
+ * the latch arms once `latch_debounce_ms` is set. The daemon now arms when the
+ * window runs out on the clock; before it had a timer it armed on the next
+ * report, and never if that report was the rock's first lift. A trace says
+ * which daemon played it (`# latch_arm=deadline`, absent before the timer),
+ * and a replay of the session as it was played - recorded thresholds, no -c -
+ * follows the trace. Anything else is a question about the daemon as it
+ * stands, so it gets today's rule. -a overrides either way.
+ *
  * -e FILE also writes the session as the virtual device saw it: every key
  * transition a reader of the uinput node would have received, and every
  * time the `deep` latch armed or disarmed, one per line. `-e -` puts that on
  * stdout and moves the human report to stderr.
  *
  *   build:  cmake --build build --target replay
- *   usage:  ./build/replay [-c CONFIG] [-e EVENTS.csv] TRACE.csv
+ *   usage:  ./build/replay [-c CONFIG] [-e EVENTS.csv] [-a RULE] TRACE.csv
  */
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
@@ -68,6 +77,10 @@ typedef struct {
     char     rec_path[4096];
     /* The `-T` header's clock anchors; 0 when absent, as in the corpus. */
     long long t0_mono_ns, t0_real_ns;
+    /* `# latch_arm=deadline`: the daemon that played this had the debounce
+     * timer. 0 for every trace recorded before it did - absence is a known
+     * value here, the same way it is for a late-added threshold. */
+    int      arm_deadline;
 } trace_t;
 
 static const struct { const char *key; size_t off; int is_int; } rec_keys[] = {
@@ -121,6 +134,9 @@ static int trace_load(const char *path, trace_t *tr) {
             sscanf(line, "# travel_mm=%f", &tr->travel_mm);
             sscanf(line, "# t0_monotonic_ns=%lld", &tr->t0_mono_ns);
             sscanf(line, "# t0_realtime_ns=%lld", &tr->t0_real_ns);
+            if (!strncmp(line, "# latch_arm=deadline", 20) &&
+                strchr("\r\n", line[20]))
+                tr->arm_deadline = 1;
             if (!strncmp(line, "# analog ", 9))
                 trace_parse_analog(line + 9, tr);
             else if (!strncmp(line, "# config_path=", 14)) {
@@ -167,6 +183,9 @@ typedef struct {
 static run_t      g_run;
 static int        g_verbose;
 static long long  g_now_us;
+/* Judge the debounce on reports alone, as a daemon with no timer did. Set
+ * once in main() and copied onto every pass's device, the sweep's included. */
+static int        g_arm_on_report;
 
 /* -e: the event stream. NULL when not asked for, and during the sweep, whose
  * passes are hypotheticals rather than the session. */
@@ -238,6 +257,7 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
                        run_t *out) {
     analog_dev_t ad;
     analog_dev_stub(&ad);
+    ad.arm_on_report = g_arm_on_report;
     memset(&g_run, 0, sizeof(g_run));
     memset(g_vkey, 0, sizeof(g_vkey));   /* the sweep re-runs this pass */
     g_run.first_engage_us = -1;
@@ -253,7 +273,9 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
          * a still plant leaves a gap in the trace and the daemon arms from a
          * timerfd inside it; fire it at its deadline here so the arm lands
          * at the same time it would live. analog_report would arm anyway
-         * when the next report arrives, but stamped late. */
+         * when the next report arrives, but stamped late. Under
+         * `arm_on_report` there is never a deadline and this is skipped:
+         * that daemon had no timer to fire. */
         uint64_t dl;
         if (analog_deep_deadline(&ad, cfg, &dl) &&
             dl <= (uint64_t)tr->f[i].us * 1000ull) {
@@ -514,33 +536,41 @@ static void report_style(const trace_t *tr, const oid_config_t *cfg) {
 
 /* ------------------------------------------------------------------------ */
 
+static int usage(const char *prog) {
+    fprintf(stderr,
+            "usage: %s [-c CONFIG] [-e EVENTS] [-a RULE] [-v] [-q] TRACE.csv\n"
+            "  -e  write virtual key transitions and deep latch\n"
+            "      changes as CSV to EVENTS (- for stdout)\n"
+            "  -a  when a debounced latch arms: `deadline` (when the window\n"
+            "      runs out, as the daemon does now) or `report` (on the\n"
+            "      next report, as it did before it had a timer). Default:\n"
+            "      the rule the trace was played under when replaying it as\n"
+            "      played, `deadline` with -c or with no recorded thresholds\n"
+            "  -v  list every latch\n"
+            "  -q  skip the bottom_out_mm sweep\n", prog);
+    return EXIT_FAILURE;
+}
+
 int main(int argc, char **argv) {
     const char *config_path = NULL;
     const char *events_path = NULL;
+    const char *arm_rule    = NULL;
     int         sweep       = 1;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:e:vq")) != -1) {
+    while ((opt = getopt(argc, argv, "a:c:e:vq")) != -1) {
         switch (opt) {
+            case 'a': arm_rule = optarg;    break;
             case 'c': config_path = optarg; break;
             case 'e': events_path = optarg; break;
             case 'v': g_verbose = 1;        break;
             case 'q': sweep = 0;            break;
-            default:
-            fprintf(stderr,
-                    "usage: %s [-c CONFIG] [-e EVENTS] [-v] [-q] TRACE.csv\n"
-                    "  -e  write virtual key transitions and deep latch\n"
-                    "      changes as CSV to EVENTS (- for stdout)\n"
-                    "  -v  list every latch\n"
-                    "  -q  skip the bottom_out_mm sweep\n", argv[0]);
-            return EXIT_FAILURE;
+            default:  return usage(argv[0]);
         }
     }
-    if (optind >= argc) {
-        fprintf(stderr, "usage: %s [-c CONFIG] [-e EVENTS] [-v] [-q] "
-                        "TRACE.csv\n", argv[0]);
-        return EXIT_FAILURE;
-    }
+    if (optind >= argc ||
+        (arm_rule && strcmp(arm_rule, "deadline") && strcmp(arm_rule, "report")))
+        return usage(argv[0]);
 
     trace_t tr;
     if (trace_load(argv[optind], &tr) != 0)
@@ -594,6 +624,32 @@ int main(int argc, char **argv) {
                     (double)tr.travel_mm, (double)cfg.analog.travel_mm);
     }
 
+    /* Which arm rule this replay runs under. Replaying the session AS IT WAS
+     * PLAYED (its own thresholds, no -c) means the rule it was played under
+     * too, and a trace with no marker was played before the timer. Every
+     * other replay asks what the daemon as it stands would do - with another
+     * config, or with a trace that records no thresholds at all - and the
+     * daemon as it stands has the timer. */
+    int as_played = recorded && !config_path;
+    if (arm_rule)
+        g_arm_on_report = !strcmp(arm_rule, "report");
+    else
+        g_arm_on_report = as_played && !tr.arm_deadline;
+    /* Only worth a line when it can change the result: with the debounce
+     * off the latch arms on the report it is planted in under either rule. */
+    if (cfg.analog.latch_debounce_ms > 0.0f) {
+        if (g_arm_on_report && !arm_rule)
+            fprintf(stderr, "replay: note: this trace predates the latch "
+                            "debounce timer; arming on the next report, as "
+                            "the daemon did then (-a deadline for today's "
+                            "rule)\n");
+        else if (!arm_rule && recorded && config_path && !tr.arm_deadline)
+            fprintf(stderr, "replay: note: this trace predates the latch "
+                            "debounce timer, but -c asks about the daemon as "
+                            "it stands; arming at the deadline (-a report "
+                            "for the rule it was played under)\n");
+    }
+
     /* `-e -` takes stdout for the events and sends the report to stderr,
      * so the stream can be piped without the summary interleaved in it. */
     if (events_path) {
@@ -618,7 +674,9 @@ int main(int argc, char **argv) {
         fprintf(g_events, "# doubletap replay events v1\n");
         fprintf(g_events, "# trace=%s\n", argv[optind]);
         fprintf(g_events, "# thresholds=%s\n",
-                recorded && !config_path ? "recorded" : config_path);
+                as_played ? "recorded" : config_path);
+        fprintf(g_events, "# latch_arm=%s\n",
+                g_arm_on_report ? "report" : "deadline");
         if (tr.t0_mono_ns)
             fprintf(g_events, "# origin_monotonic_ns=%lld\n",
                     tr.t0_mono_ns + tr.f[0].us * 1000);
@@ -635,7 +693,7 @@ int main(int argc, char **argv) {
     report_gaps(&tr, &cfg);
 
     run_t r;
-    printf(recorded && !config_path
+    printf(as_played
            ? "\nwith the thresholds it was played under:\n"
            : "\nwith the config as it stands:\n");
     replay_run(&tr, &cfg, &r);

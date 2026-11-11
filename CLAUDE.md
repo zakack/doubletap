@@ -96,6 +96,22 @@ played under its default, so absence is a known value, and requiring it
 would make every such trace a partial set and discard its thresholds
 (`latch_debounce_ms` is the first). The corpus has no `# analog` line, so it
 still reads the config exactly as before.
+The header ends with `# latch_arm=deadline`, which records a RULE rather than
+a threshold: this binary arms a debounced latch when the window runs out on
+the clock. A trace without the line was played by a daemon that had no timer
+and armed on the next report, and `replay` reproduces THAT when it replays a
+session as played (recorded thresholds, no `-c`) — otherwise every arm moves
+earlier and latches appear that never happened (27 of the 56 traces recorded
+before the marker existed, all of those with a non-zero debounce). With `-c`,
+or with no recorded thresholds, the question is about the daemon as it stands
+and the rule is today's. `-a deadline|report` overrides either, and the `-e`
+stream says which ran (`# latch_arm=`). The switch is `arm_on_report` on
+`analog_dev_t`: it makes `analog_deep_tick` a no-op and `analog_deep_deadline`
+report nothing, which is the whole of the old behaviour, and ONLY `replay`
+sets it. If the arm rule changes again, give the header a new value; do not
+reuse `deadline`. The line sits after `# analog` deliberately — outside
+readers take the first eight header lines, and it must not push anything
+they look for past that.
 `tools/replay.c` consumes it — built as part of `all` (see below), and NOT
 installed. It `#include`s `doubletapd.c` and stubs only the uinput writes, so
 it exercises the daemon's real state machine rather than a copy that could
@@ -454,7 +470,8 @@ down in reverse order.
   `plant_ns == 0`, because `regimetest` passes `t_ns = 0` on every report.
   Default 0 is the old instantaneous test, which is what keeps every other
   case and the corpus unchanged; `regimetest` case S covers the window with
-  periodic reports, case U a plant that then sends nothing. The window
+  periodic reports, case U a plant that then sends nothing, and case V the
+  pre-timer rule `replay` runs old traces under (`arm_on_report`). The window
   is computed in ONE place (`analog_debounce_ns`, whole nanoseconds, rounded
   up) so the deadline and the arm test cannot disagree: a tick exactly on
   the deadline must arm, which `replay` depends on.

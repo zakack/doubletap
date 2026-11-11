@@ -2382,6 +2382,10 @@ typedef struct {
                                  * the debounce runs - only for the ARMED
                                  * log line when the window expires between
                                  * reports (analog_deep_tick) */
+    int            arm_on_report; /* REPLAY ONLY, never set by the daemon:
+                                   * judge the debounce on reports alone, as
+                                   * the daemon did before it had a timer.
+                                   * See analog_deep_tick. */
 } analog_dev_t;
 
 static analog_dev_t *analog_dev_open(const oid_config_t *cfg,
@@ -2529,7 +2533,18 @@ static void analog_dev_close(analog_dev_t *ad) {
  * than whatever the config says by the time someone replays it. Without
  * that, a trace is only meaningful alongside a copy of the config it was
  * recorded with. The keys are spelled as their config paths, and release_mm
- * is left out because it is derived from actuation_mm, not configured. */
+ * is left out because it is derived from actuation_mm, not configured.
+ *
+ * `# latch_arm=deadline` is the same idea for a rule instead of a number: it
+ * says the daemon this binary is arms the latch when the debounce runs out on
+ * the clock (analog_deep_tick). A trace WITHOUT the line was recorded before
+ * the timer existed, by a daemon that armed on the next report, and `replay`
+ * reproduces it that way. It describes the binary, not the config, so it is
+ * true of the session only while `-T` and the running daemon are the same
+ * build - which is how they are installed. It goes AFTER the `# analog` line
+ * on purpose: readers that only look at the first few header lines keep
+ * finding everything where it was. If the arm rule ever changes again, give
+ * it a new value here rather than reusing this one. */
 static int analog_trace(const oid_config_t *cfg, const char *config_path,
                         const char *input_dir) {
     analog_dev_t *ad = analog_dev_open(cfg, input_dir);
@@ -2566,6 +2581,7 @@ static int analog_trace(const oid_config_t *cfg, const char *config_path,
            (double)a->travel_mm, (double)a->actuation_mm, a->rt_enabled,
            (double)a->rt_press_mm, (double)a->rt_release_mm,
            (double)a->bottom_out_mm, (double)a->latch_debounce_ms);
+    printf("# latch_arm=deadline\n");
     printf("us,k1_mm,k2_mm\n");
     fflush(stdout);
 
@@ -3248,6 +3264,8 @@ static uint64_t analog_debounce_ns(const analog_config_t *a) {
  * The daemon arms a timerfd on this; see analog_deep_tick. */
 static int analog_deep_deadline(const analog_dev_t *ad, const oid_config_t *cfg,
                                 uint64_t *deadline_ns) {
+    if (ad->arm_on_report)
+        return 0;
     if (ad->deep || !ad->plant_pending || cfg->analog.latch_debounce_ms <= 0.0f)
         return 0;
     *deadline_ns = ad->plant_ns + analog_debounce_ns(&cfg->analog);
@@ -3296,9 +3314,23 @@ static void analog_deep_try_arm(analog_dev_t *ad, const oid_config_t *cfg,
  * time before feeding, so a report that lands after a window the timer has
  * not yet been serviced for - or the tools, which have no timer - arm first
  * and then run the report under the toggle, exactly as the daemon would have.
- * Nothing presses or clicks here except what analog_deep_set reconciles. */
+ * Nothing presses or clicks here except what analog_deep_set reconciles.
+ *
+ * `arm_on_report` turns all of this off, and exists for one caller: replay,
+ * on a trace recorded by a daemon that had no timer. That daemon judged the
+ * window only inside analog_deep_update, so a still plant armed on the next
+ * report and a rock whose next report was its first lift never armed at all.
+ * That was the defect - but it is also what the player's virtual keys DID in
+ * those sessions, and replaying them under this rule instead moves every arm
+ * earlier and adds latches that never happened. A `-T` trace says which rule
+ * it was played under (`# latch_arm=deadline`, see analog_trace); one that
+ * does not say predates the timer. Both callers come through here, and
+ * analog_deep_deadline reports nothing to wait for, so the flag is the whole
+ * of the old behaviour - analog_deep_update is the same code either way. */
 static void analog_deep_tick(analog_dev_t *ad, const oid_config_t *cfg,
                              uint64_t t_ns) {
+    if (ad->arm_on_report)
+        return;
     analog_deep_try_arm(ad, cfg, t_ns);
 }
 
