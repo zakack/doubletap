@@ -901,6 +901,65 @@ int main(void) {
         expect_int("  every queued event read in one pass", q_pos, q_n);
     }
 
+    puts("U. latch_debounce_ms runs out on the CLOCK, not on the next report");
+    /* The board reports on change: two planted, still fingers send
+     * nothing. Case S feeds a report every millisecond, which the hardware
+     * does not do; here the plant goes quiet and only the timer is left to
+     * end the window (issue #12). */
+    cfg.analog.latch_debounce_ms = 30.0f;
+    uint64_t dl = 0;
+    fresh();
+    sample_at(0.0, 3.85f, 0.00f);
+    expect_log("k1 planted", "v1+");
+    sample_at(5.0, 3.85f, 3.85f);
+    expect_log("k2 planted, then silence", "v2+");
+    expect_int("  a deadline is running", analog_deep_deadline(&ad, &cfg, &dl), 1);
+    expect_int("  at plant + 30ms", (int)(dl / 1000000ull), 35);
+    reset_log();
+    analog_deep_tick(&ad, &cfg, 34000000ull);
+    expect_int("  timer early by 1ms: still pending", ad.deep, 0);
+    analog_deep_tick(&ad, &cfg, 35000000ull);
+    expect_log("timer at the deadline arms it, v1 steps aside", "v1-");
+    expect_clicks("  arming from the timer is silent", "");
+    expect_int("  armed with no report", ad.deep, 1);
+    expect_int("  and the deadline is gone", analog_deep_deadline(&ad, &cfg, &dl), 0);
+    sample_at(200.0, 3.85f, 3.00f);
+    expect_log("the first lift of the rock is a beat", "v2- v1+");
+    expect_clicks("  and it clicks", "c1");
+    sample_at(210.0, 0.00f, 0.00f);
+    expect_log("both leave: disarm", "v1-");
+    expect_int("  disarmed", ad.deep, 0);
+
+    /* No timer serviced before the next report - the tools, or an epoll
+     * batch that drains the board before the timer. The window ran out
+     * before this report, so the report must already run under the
+     * toggle; judging the lift first would cancel the plant and lose the
+     * rock, which is the original defect. */
+    fresh();
+    sample_at(0.0, 3.85f, 0.00f);
+    sample_at(5.0, 3.85f, 3.85f);
+    sample_at(200.0, 3.85f, 3.00f);
+    expect_log("lift after the window: arms first, then beats", "v1- v2- v1+");
+    expect_clicks("  one click, for the beat", "c1");
+    expect_int("  armed", ad.deep, 1);
+
+    /* A key leaving the floor ends the window: nothing for the timer. */
+    fresh();
+    sample_at(0.0, 3.85f, 3.85f);
+    sample_at(10.0, 3.85f, 3.00f);
+    expect_int("  one key left: no deadline",
+               analog_deep_deadline(&ad, &cfg, &dl), 0);
+    analog_deep_tick(&ad, &cfg, 100000000ull);
+    expect_int("  and a late tick does not arm", ad.deep, 0);
+    cfg.analog.latch_debounce_ms = 0.0f;
+
+    /* Debounce off: arming is instantaneous, so nothing ever waits. */
+    fresh();
+    sample_at(0.0, 3.85f, 3.85f);
+    expect_int("debounce 0 arms on the report", ad.deep, 1);
+    expect_int("  and never asks for a timer",
+               analog_deep_deadline(&ad, &cfg, &dl), 0);
+
     printf("\n%s\n", fails ? "FAILURES ABOVE" : "all assertions passed");
     return fails ? 1 : 0;
 }

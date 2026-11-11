@@ -248,6 +248,29 @@ static void replay_run(const trace_t *tr, const oid_config_t *cfg,
 
     for (size_t i = 0; i < tr->n; i++) {
         int   was = ad.deep;
+
+        /* The daemon's latch-debounce timer. The board reports on change, so
+         * a still plant leaves a gap in the trace and the daemon arms from a
+         * timerfd inside it; fire it at its deadline here so the arm lands
+         * at the same time it would live. analog_report would arm anyway
+         * when the next report arrives, but stamped late. */
+        uint64_t dl;
+        if (analog_deep_deadline(&ad, cfg, &dl) &&
+            dl <= (uint64_t)tr->f[i].us * 1000ull) {
+            g_now_us = (long long)(dl / 1000ull);
+            analog_deep_tick(&ad, cfg, dl);
+            events_deep_sync();
+            if (ad.deep) {
+                long long at = g_now_us - tr->f[0].us;
+                g_run.engagements++;
+                if (g_run.first_engage_us < 0)
+                    g_run.first_engage_us = at;
+                if (g_verbose)
+                    printf("  latched at %8.3fs   (debounce timer, no report)\n",
+                           at / 1e6);
+            }
+            was = ad.deep;
+        }
         g_now_us = tr->f[i].us;
 
         /* The daemon's own per-report path, not a restatement of it - the
