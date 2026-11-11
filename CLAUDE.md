@@ -437,13 +437,27 @@ down in reverse order.
   timestamps (`t_ns`, threaded into `analog_deep_update`), before `deep`
   arms; either key leaving the floor restarts the window. It filters two
   hard taps that both graze the floor in one report, not a resting finger,
-  and it compares no depths across keys. While it runs the pair is still on
-  the plain remap, so a long value only delays the toggle; nothing presses
-  or clicks on a late arm. Disarming is never debounced. The pending state
-  is a flag (`plant_pending`), not `plant_ns == 0`, because `regimetest`
-  passes `t_ns = 0` on every report. Default 0 is the old instantaneous
-  test, which is what keeps every other case and the corpus unchanged;
-  `regimetest` case S covers it.
+  and it compares no depths across keys. The window runs out on the CLOCK,
+  not on the next report: the board reports on change, so two planted,
+  still fingers send nothing, and judging it per report left a still plant
+  unarmed until something moved - and if that was the rock's first lift,
+  the plant was cancelled and the rock never armed (#12). `run_loop` keeps a
+  timerfd on `analog_deep_deadline` (`latch_timer_sync`) and arms from
+  `analog_deep_tick` when it fires; `analog_report` also ticks with the
+  report's own time before feeding, so a report landing after an unserviced
+  deadline is judged under the toggle, and `replay` fires the tick at the
+  deadline itself. While it runs the pair is still on the plain remap, so a
+  long value delays the toggle by exactly that long and no more; a rock
+  whose first lift comes inside the window does not arm. Nothing presses or
+  clicks on arming beyond `analog_deep_set`'s reconciliation. Disarming is
+  never debounced. The pending state is a flag (`plant_pending`), not
+  `plant_ns == 0`, because `regimetest` passes `t_ns = 0` on every report.
+  Default 0 is the old instantaneous test, which is what keeps every other
+  case and the corpus unchanged; `regimetest` case S covers the window with
+  periodic reports, case U a plant that then sends nothing. The window
+  is computed in ONE place (`analog_debounce_ns`, whole nanoseconds, rounded
+  up) so the deadline and the arm test cannot disagree: a tick exactly on
+  the deadline must arm, which `replay` depends on.
 - The config check still requires `actuation_mm` to sit above the
   backplate, though no longer because actuation disarms the latch: an
   actuation line at or past the floor means a key could reach the backplate
