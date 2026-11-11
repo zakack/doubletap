@@ -973,6 +973,50 @@ int main(void) {
     expect_int("  and never asks for a timer",
                analog_deep_deadline(&ad, &cfg, &dl), 0);
 
+    puts("V. arm_on_report: the rule from before the timer, for old traces");
+    /* replay sets this on a trace recorded by a daemon that had no debounce
+     * timer, and it has to reproduce that daemon's defect exactly - the
+     * point is what the player's virtual keys DID in that session, not what
+     * they should have done. These are case U's first two gestures with the
+     * opposite outcomes. */
+    cfg.analog.latch_debounce_ms = 30.0f;
+    fresh();
+    ad.arm_on_report = 1;
+    sample_at(0.0, 3.85f, 0.00f);
+    sample_at(5.0, 3.85f, 3.85f);
+    expect_int("planted, then silence: no deadline to wait for",
+               analog_deep_deadline(&ad, &cfg, &dl), 0);
+    reset_log();
+    analog_deep_tick(&ad, &cfg, 100000000ull);
+    expect_log("a tick long after the window does nothing", "");
+    expect_int("  not armed", ad.deep, 0);
+    sample_at(200.0, 3.85f, 3.00f);
+    expect_log("the first lift is a plain release: the rock never armed",
+               "v2-");
+    expect_int("  still not armed", ad.deep, 0);
+
+    /* It could still arm, but only from a report that found both keys on
+     * the floor after the window - so late, and stamped on that report. */
+    fresh();
+    ad.arm_on_report = 1;
+    sample_at(0.0, 3.85f, 0.00f);
+    sample_at(5.0, 3.85f, 3.85f);
+    sample_at(34.0, 3.85f, 3.86f);
+    expect_int("a report inside the window: still pending", ad.deep, 0);
+    sample_at(72.0, 3.85f, 3.87f);
+    expect_log("a report after it, both still planted: arms there", "v1-");
+    expect_int("  armed", ad.deep, 1);
+    sample_at(200.0, 3.85f, 3.00f);
+    expect_log("  and rides as usual from then on", "v2- v1+");
+
+    /* The flag lives on the device, and a fresh one does not have it. */
+    fresh();
+    sample_at(0.0, 3.85f, 0.00f);
+    sample_at(5.0, 3.85f, 3.85f);
+    expect_int("a fresh device is back on the timer",
+               analog_deep_deadline(&ad, &cfg, &dl), 1);
+    cfg.analog.latch_debounce_ms = 0.0f;
+
     printf("\n%s\n", fails ? "FAILURES ABOVE" : "all assertions passed");
     return fails ? 1 : 0;
 }
