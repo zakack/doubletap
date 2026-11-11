@@ -951,6 +951,19 @@ int main(void) {
                analog_deep_deadline(&ad, &cfg, &dl), 0);
     analog_deep_tick(&ad, &cfg, 100000000ull);
     expect_int("  and a late tick does not arm", ad.deep, 0);
+
+    /* A tick exactly ON the deadline arms, for a value that is not exact
+     * in a float too. replay fires its tick there; with the deadline
+     * truncated and the test in floating point this came up short. */
+    cfg.analog.latch_debounce_ms = 33.3f;
+    fresh();
+    sample_at(5.0, 3.85f, 3.85f);
+    expect_int("33.3ms: a deadline is running",
+               analog_deep_deadline(&ad, &cfg, &dl), 1);
+    analog_deep_tick(&ad, &cfg, dl - 1);
+    expect_int("  1ns early: still pending", ad.deep, 0);
+    analog_deep_tick(&ad, &cfg, dl);
+    expect_int("  on the deadline: armed", ad.deep, 1);
     cfg.analog.latch_debounce_ms = 0.0f;
 
     /* Debounce off: arming is instantaneous, so nothing ever waits. */

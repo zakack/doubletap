@@ -3227,6 +3227,22 @@ static void analog_deep_set(analog_dev_t *ad, int on,
     }
 }
 
+/* The debounce window in whole nanoseconds, rounded UP, and the one place
+ * it is computed. The deadline and the arm test must agree to the
+ * nanosecond: with the deadline truncated and the test left in floating
+ * point, a tick landing exactly on the deadline came up a fraction of a
+ * nanosecond short for any value that is not exact in a float (33.3ms,
+ * 16.7ms) and did not arm. The daemon's timer always fires a little late,
+ * so it never showed there; replay ticks AT the deadline, and stamped the
+ * arm on the next report instead. */
+static uint64_t analog_debounce_ns(const analog_config_t *a) {
+    if (a->latch_debounce_ms <= 0.0f)
+        return 0;
+    double   want = (double)a->latch_debounce_ms * 1e6;
+    uint64_t ns   = (uint64_t)want;
+    return (double)ns < want ? ns + 1 : ns;     /* ceil, without libm */
+}
+
 /* When a running latch debounce runs out, or 0 if none is running (no
  * plant pending, already armed, or the debounce is off and so never waits).
  * The daemon arms a timerfd on this; see analog_deep_tick. */
@@ -3234,8 +3250,7 @@ static int analog_deep_deadline(const analog_dev_t *ad, const oid_config_t *cfg,
                                 uint64_t *deadline_ns) {
     if (ad->deep || !ad->plant_pending || cfg->analog.latch_debounce_ms <= 0.0f)
         return 0;
-    *deadline_ns = ad->plant_ns +
-                   (uint64_t)((double)cfg->analog.latch_debounce_ms * 1e6);
+    *deadline_ns = ad->plant_ns + analog_debounce_ns(&cfg->analog);
     return 1;
 }
 
@@ -3246,8 +3261,7 @@ static void analog_deep_try_arm(analog_dev_t *ad, const oid_config_t *cfg,
     const analog_config_t *a = &cfg->analog;
     if (ad->deep || !ad->plant_pending)
         return;
-    if (a->latch_debounce_ms > 0.0f &&
-        (double)(t_ns - ad->plant_ns) < (double)a->latch_debounce_ms * 1e6)
+    if (t_ns - ad->plant_ns < analog_debounce_ns(a))
         return;
     ad->plant_pending = 0;
     /* Logged because arming is otherwise INVISIBLE: it is release-only
@@ -3686,8 +3700,9 @@ static int run_loop(dev_list_t *devs, const oid_config_t *cfg,
 
     /* The latch debounce has to run out on the clock: the board reports on
      * change, so planted, still fingers send nothing to judge it by. Only
-     * needed with a debounce, and only on the analog path, but cheap enough
-     * to keep unconditionally so a reconnected board needs no setup. Losing
+     * created with a debounce configured in analog mode, but then kept for
+     * the life of the loop whether or not the board is present, so a
+     * reconnected board needs no setup. Losing
      * it is not fatal - a still plant then arms on the next report, as it
      * used to. */
     int tfd = -1;

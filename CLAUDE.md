@@ -454,7 +454,10 @@ down in reverse order.
   `plant_ns == 0`, because `regimetest` passes `t_ns = 0` on every report.
   Default 0 is the old instantaneous test, which is what keeps every other
   case and the corpus unchanged; `regimetest` case S covers the window with
-  periodic reports, case U a plant that then sends nothing.
+  periodic reports, case U a plant that then sends nothing. The window
+  is computed in ONE place (`analog_debounce_ns`, whole nanoseconds, rounded
+  up) so the deadline and the arm test cannot disagree: a tick exactly on
+  the deadline must arm, which `replay` depends on.
 - The config check still requires `actuation_mm` to sit above the
   backplate, though no longer because actuation disarms the latch: an
   actuation line at or past the floor means a key could reach the backplate
