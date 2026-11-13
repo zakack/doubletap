@@ -1,5 +1,12 @@
 # doubletap
 
+> **doubletap is succeeded by [evtrill](https://github.com/zakack/evtrill)**
+> ([AUR: `evtrill`](https://aur.archlinux.org/packages/evtrill)). evtrill is
+> the same input daemon without the hitsounds, with per-pair modes and a
+> hardened system service. For hitsounds, see
+> [evclack](https://github.com/zakack/evclack). New work happens there;
+> doubletap is kept as-is for existing installs.
+
 A SOCD cleaner for Linux — snap tap style key
 handling as a daemon, turning a "rocking" two-finger pattern into
 rapid-fire, gap-free key alternation on any keyboard.
